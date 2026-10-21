@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+.DS_Store
+dist/
+.work/
+*.xcuserstate
+.signing-identity
+.signing-identity.*
