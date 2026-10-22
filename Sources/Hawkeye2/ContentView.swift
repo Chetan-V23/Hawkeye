@@ -1,5 +1,5 @@
 import SwiftUI
-import AppKit
+import AVFAudio
 import HawkeyeCore
 
 struct ContentView: View {
@@ -207,12 +207,13 @@ struct TaskRow: View {
         case idle, striking, popping
     }
 
-    private static let completionSound: NSSound? = {
+    private static let completionSound: AVAudioPlayer? = {
         let resources = Bundle.main.url(forResource: "Hawkeye2_Hawkeye2", withExtension: "bundle")
             .flatMap { Bundle(url: $0) } ?? .module
         let sound = resources.url(forResource: "coin", withExtension: "wav")
-            .flatMap { NSSound(contentsOf: $0, byReference: false) }
+            .flatMap { try? AVAudioPlayer(contentsOf: $0) }
         sound?.volume = 0.65
+        sound?.prepareToPlay()
         return sound
     }()
 
@@ -221,13 +222,8 @@ struct TaskRow: View {
 
     private func complete() {
         guard completionPhase == .idle else { return }
-        let completionEventTime = NSApp.currentEvent?.timestamp ?? ProcessInfo.processInfo.systemUptime
-        let completionHandlerTime = ProcessInfo.processInfo.systemUptime
-        Self.completionSound?.stop()
+        Self.completionSound?.currentTime = 0
         Self.completionSound?.play()
-        let completionSoundTime = ProcessInfo.processInfo.systemUptime
-        let timing = "completion timing handler_ms=\((completionHandlerTime - completionEventTime) * 1000) sound_return_ms=\((completionSoundTime - completionEventTime) * 1000) event=\(String(describing: NSApp.currentEvent?.type))\n"
-        FileHandle.standardError.write(Data(timing.utf8))
 
         if reduceMotion {
             completionPhase = .striking
@@ -325,6 +321,8 @@ struct TaskRow: View {
                     else if model.isRemote(task) { syncLabel("TickTick") }
                 }.font(.system(size: 10))
             }.frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2, perform: edit)
             Menu {
                 taskOptions
             } label: { Image(systemName: "ellipsis").foregroundStyle(Palette.muted) }
@@ -334,7 +332,6 @@ struct TaskRow: View {
             .background(active ? Palette.green.opacity(0.055) : Palette.card.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(active ? Palette.green.opacity(0.3) : Palette.line))
             .contextMenu { taskOptions }
-            .onTapGesture(count: 2, perform: edit)
             .disabled(completionPhase != .idle || model.saving)
             .scaleEffect(completionPhase == .popping ? 0.01 : 1)
             .opacity(completionPhase == .popping ? 0 : 1)

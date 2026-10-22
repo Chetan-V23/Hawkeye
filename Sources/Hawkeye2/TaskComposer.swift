@@ -9,7 +9,7 @@ struct TaskComposer: View {
     @State private var dueAt = TaskScheduleSelection.nextHalfHour()
     @State private var hasSuggestedDueDate = true
     @State private var durationMinutes = 0
-    @State private var showDetails = false
+    @State private var showDetails = true
     @FocusState private var titleFocused: Bool
 
     var body: some View {
@@ -25,6 +25,7 @@ struct TaskComposer: View {
             if showDetails {
                 TextField("Add a description", text: $taskDescription, axis: .vertical)
                     .lineLimit(2...4).textFieldStyle(.plain).font(.system(size: 12))
+                    .onSubmit(addTask)
                     .accessibilityLabel("New task description")
                 Toggle("Start time", isOn: $hasDueDate).toggleStyle(.checkbox)
                     .font(.system(size: 11)).foregroundStyle(Palette.muted)
