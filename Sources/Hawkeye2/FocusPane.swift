@@ -19,17 +19,23 @@ struct FocusPane: View {
                     .lineLimit(4).multilineTextAlignment(.center).padding(.top, 12)
             }
             Spacer()
-            #if DEBUG
             HStack {
                 Spacer()
+                #if DEBUG
                 Button { openWindow(id: "activity") } label: {
                     Image(systemName: "waveform.path.ecg").font(.system(size: 14))
                         .frame(width: 30, height: 30)
                         .background(Palette.card, in: RoundedRectangle(cornerRadius: 8))
                 }.buttonStyle(.plain).foregroundStyle(Palette.muted)
                     .help("Open developer activity log").accessibilityLabel("Open activity log")
+                #endif
+                Button { model.showFocusConfiguration = true } label: {
+                    Image(systemName: "gearshape").font(.system(size: 14))
+                        .frame(width: 30, height: 30)
+                        .background(Palette.card, in: RoundedRectangle(cornerRadius: 8))
+                }.buttonStyle(.plain).foregroundStyle(Palette.muted)
+                    .help("Configure blocked apps and websites").accessibilityLabel("Configure blocked apps and websites")
             }
-            #endif
         }.padding(.horizontal, 18).padding(.vertical, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Palette.sidebar.opacity(0.45))

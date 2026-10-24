@@ -22,10 +22,13 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     @Published var now = Date()
     @Published var showSettings = false
+    @Published var showFocusConfiguration = false
     @Published private(set) var activeTaskID: UUID?
     @Published private(set) var userFocus = UserFocusState()
     let focusEvents = PassthroughSubject<TaskFocusEvent, Never>()
     let activity: ActivityLog
+    let permissions: FocusPermissions
+    let distractions: DistractionSettings
 
     private let service: TaskService?
     private let isolated: Bool
@@ -36,8 +39,10 @@ final class AppModel: ObservableObject {
     private var polling: Task<Void, Never>?
     private var connectionGeneration = 0
     private var focusTimer: Task<Void, Never>?
+    private var permissionSetup: Task<Void, Never>?
     private var focusListeners = Set<AnyCancellable>()
     private let notifications: TaskNotifications
+    private let distractionMonitor: DistractionMonitor
     private var started = false
     private var lifecycleReady = false
 
@@ -56,7 +61,15 @@ final class AppModel: ObservableObject {
         activity = ActivityLog(fileURL: directory.map {
             URL(fileURLWithPath: $0).appendingPathComponent("activity.log")
         } ?? ActivityLog.defaultURL)
-        notifications = TaskNotifications(log: activity)
+        notifications = TaskNotifications(log: activity, effectsEnabled: !isolated)
+        distractions = DistractionSettings(preferences: preferences, fileURL: directory.map {
+            URL(fileURLWithPath: $0).appendingPathComponent("focus-policy.json")
+        })
+        permissions = FocusPermissions(effectsRequested: true, preferences: preferences, notifications: notifications,
+                                       settings: distractions, isolated: isolated)
+        let nativeMonitoring = MacDistractionEffects(permissions: permissions)
+        distractionMonitor = DistractionMonitor(policy: distractions.policy,
+            detector: DeterministicDistractionDetector(observations: nativeMonitoring), actions: nativeMonitoring, log: activity)
         do {
             let defaultStoreURL: URL
             #if DEBUG
@@ -91,7 +104,8 @@ final class AppModel: ObservableObject {
     }
 
     init(service: TaskService, client: TickTickClient, project: ProjectOption, preferences: UserDefaults,
-         tokenStore: TokenStore = .defaultStore) {
+         tokenStore: TokenStore = .defaultStore, monitorDetector: (any DistractionDetecting)? = nil,
+         monitorActions: (any DistractionActions)? = nil) {
         self.service = service
         self.tokenStore = tokenStore
         tickTickClient = client
@@ -103,11 +117,17 @@ final class AppModel: ObservableObject {
         ready = true
         activity = ActivityLog(fileURL: tokenStore.fileURL?.deletingLastPathComponent().appendingPathComponent("activity.log")
                                ?? ActivityLog.defaultURL)
-        notifications = TaskNotifications(log: activity)
+        notifications = TaskNotifications(log: activity, effectsEnabled: false)
+        distractions = DistractionSettings(preferences: preferences)
+        permissions = FocusPermissions(effectsRequested: false, preferences: preferences, notifications: notifications, settings: distractions)
+        let nativeMonitoring = MacDistractionEffects(permissions: permissions)
+        distractionMonitor = DistractionMonitor(policy: distractions.policy,
+            detector: monitorDetector ?? DeterministicDistractionDetector(observations: nativeMonitoring),
+            actions: monitorActions ?? nativeMonitoring, log: activity)
         installFocusListeners()
     }
 
-    deinit { polling?.cancel(); focusTimer?.cancel() }
+    deinit { polling?.cancel(); focusTimer?.cancel(); permissionSetup?.cancel() }
 
     var activeTask: TodoTask? { tasks.first { $0.id == activeTaskID } }
     func isActive(_ task: TodoTask) -> Bool { activeTaskID == task.id }
@@ -115,7 +135,12 @@ final class AppModel: ObservableObject {
         isActive(task) && userFocus.snooze == nil && !userFocus.snoozedTaskIDs.contains(task.id)
     }
 
+    func updateMonitoringDetector(_ detector: any DistractionDetecting) {
+        distractionMonitor.update(detector: detector)
+    }
+
     private func installFocusListeners() {
+        distractions.$policy.dropFirst().sink { [weak self] in self?.distractionMonitor.update(policy: $0) }.store(in: &focusListeners)
         focusEvents.sink { [weak self] event in
             guard let self else { return }
             switch event {
@@ -167,9 +192,9 @@ final class AppModel: ObservableObject {
     func start() async {
         guard !started, ready else { return }
         started = true
-        await notifications.requestAuthorization()
         lifecycleReady = true
         await refresh()
+        permissionSetup = Task { [weak self] in await self?.permissions.start() }
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 let clock = ContinuousClock()
@@ -368,6 +393,7 @@ final class AppModel: ObservableObject {
 
     private func apply(_ update: TaskFocusUpdate) {
         userFocus = update.user
+        distractionMonitor.update(activeTask: update.activeTask)
         for event in update.events { focusEvents.send(event) }
         scheduleFocusEvaluation(at: update.nextTransitionAt)
     }

@@ -56,17 +56,39 @@ Right-click any inactive unfinished task, including an overdue or unscheduled ta
 
 Click a task's circle to complete it. Completed tasks move to the left pane. Uncheck a completed task to reopen it. Double-click any unfinished task to edit it. The relaxed eye appears whenever no task is active. Activation runs independently of the visible pane while the app is running, checks again after wake or clock changes, and stops when the app quits.
 
+## Configure focus blocking
+
+Open the gear button at the bottom-right to configure blocked apps and websites. The default blocks are Chess, Firefox, and `instagram.com`. **Add app…** selects a Mac application by its bundle identifier. Website entries accept a domain or an HTTP or HTTPS URL and save its hostname. Remove an entry with its minus button. Changes save locally and apply immediately, including during an active task. Development and release builds keep separate preferences. Isolated sessions save `focus-policy.json` inside their data directory.
+
+During an active task, Hawkeye checks the foreground app about once per second. A blocked app closes completely when brought to the front. Firefox is a whole-app block by default, including all its other tabs, because it has no supported tab automation. You can remove Firefox or add other apps in the configuration panel. Hawkeye cannot add itself to the blocked list.
+
+When Safari or Google Chrome is in front, Hawkeye inspects open tabs across its windows and closes only tabs whose actual HTTP or HTTPS hostname matches a blocked domain or its subdomains. `instagram.com.evil.example`, query strings, and URL usernames do not cause false matches. A browser added to the blocked apps list closes completely instead. Other browsers do not support website blocking in this version. No browser JavaScript-from-Apple-Events setting is needed.
+
+Blocking stops when there is no active task, including a user pause, task completion, or the task's end time. Restarting an active task occurrence resumes blocking even if its start notification was already delivered. Changing an active task's duration updates the monitoring deadline.
+
+The first launch of the signed, packaged app opens **Focus permissions** and requests Notifications, Accessibility for computer control, and Screen Recording for screen reading. This version does not capture screenshots or read screen contents. Foreground app detection and app blocking work without Accessibility or Screen Recording. Browser tab blocking requires separate **Automation** access for each supported browser. Hawkeye requests that access only while the browser is already running and never opens a browser for setup. An unanswered permission prompt does not pause task scheduling.
+
+Reopen **Focus permissions…** from the app menu, TickTick settings, or the focus configuration panel. It shows current access and links to the relevant System Settings panes. If you deny access, enable Hawkeye in System Settings and refresh the status. Some macOS permission changes require reopening Hawkeye. Each browser's initial consent request runs once per Hawkeye preference profile. You can request it again manually. A bare `swift run` process shows the packaged-app requirement and disables system effects because macOS cannot reliably attribute its permissions.
+
+The monitor checks the current task, deadline, foreground app identity, and policy again after asynchronous tab reads. It revalidates the exact URL before closing a tab. Chrome uses stable window and tab IDs. Safari has no stable tab ID, so it uses window ID and tab position, closes in reverse order, and skips a tab if its URL changed. Rapid browser edits can still race between the last URL read and the close event. Browser commands time out after four seconds and are cancelled when focus or policy changes. An AppleEvent already delivered to a browser cannot be withdrawn and may finish after a pause or policy edit.
+
+To identify the foreground app from Terminal with the same native API, use this read-only command:
+
+```sh
+osascript -l JavaScript -e 'ObjC.import("AppKit"); ObjC.unwrap($.NSWorkspace.sharedWorkspace.frontmostApplication.bundleIdentifier)'
+```
+
 ## Read activity logs
 
-Developer builds write readable activity to `~/Library/Logs/Hawkeye2/Development/activity.log`. Release builds write to `~/Library/Logs/Hawkeye2/activity.log`. Files rotate at 5 MiB and retain one `.previous` file. Logs include task actions, activation and deactivation reasons, user pauses, notification results, and TickTick sync summaries and errors. Credentials and HTTP payloads are not logged.
+Developer builds write readable activity to `~/Library/Logs/Hawkeye2/Development/activity.log`. Release builds write to `~/Library/Logs/Hawkeye2/activity.log`. Files rotate at 5 MiB and retain one `.previous` file. Logs include task actions, activation and deactivation reasons, user pauses, notification results, and TickTick sync summaries and errors. Focus blocking records distraction detection, closing attempts, accepted close requests, failures, and skipped-tab outcomes using the configured app name or domain. Missing browser Automation access is also recorded. Repeated failures for the same target are suppressed while blocking continues retrying. Browsing URLs, tab titles, credentials, and HTTP payloads are not logged.
 
 In the developer app, click the small activity button at the bottom-right to open a separate live activity window. It shows the latest 500 events from this session and offers **Open log file** and **Show in Finder**. Release builds omit that button and window. Isolated `--data-directory` sessions write `activity.log` inside that directory.
 
 ## Verify changes
 
-Run `swift test`. The tests use temporary stores and a mock HTTP transport without accessing your account.
+Run `swift test`. The tests use temporary stores and a mock HTTP transport without accessing your account. Monitoring tests inject fake foreground apps and browser observations. JXA fixtures operate on in-memory mock tabs. No tests request macOS access, inspect real browser tabs, or close real apps.
 
-For an isolated manual UI check, run `swift run Hawkeye2 --data-directory /tmp/hawkeye2-check`. This session uses its own task file, skips saved credentials, and blocks saving a connection.
+For an isolated manual UI check, run `swift run Hawkeye2 --data-directory /tmp/hawkeye2-check`. This session uses its own task and blacklist files, skips saved credentials, and blocks saving a connection. Permissions UI remains available with request actions disabled. It never requests system access, inspects real apps, sends browser events, or terminates apps.
 
 To check the packaged app, run `zsh scripts/prepare-ui-check.sh` after building. Open `.work/Hawkeye 2 Check.app`. It uses `.work/ui-data/tasks.json` and skips saved credentials.
 
@@ -74,7 +96,11 @@ To check the packaged app, run `zsh scripts/prepare-ui-check.sh` after building.
 
 `Sources/HawkeyeCore` owns the task model, durable storage, and sync. `TaskService` is the single writer of task state. Add future AI tracking through that service rather than mutating view snapshots or writing the JSON file directly. The core has no SwiftUI dependency.
 
-`Sources/Hawkeye2` contains the SwiftUI panes, task editor, settings, Keychain access, and the `AppModel` adapter. `Theme.swift` defines the palette. No AI monitoring, screen capture, or inference runs in this version.
+`Sources/Hawkeye2` contains the SwiftUI panes, task editor, settings, Keychain access, and the `AppModel` adapter. `DistractionSettings` owns local blacklist persistence.
+
+`DistractionMonitor` owns task-bound enforcement and logging. It accepts a Sendable async `DistractionDetecting` provider that receives task, policy, deadline, and foreground context and returns typed findings. `DeterministicDistractionDetector` is the only implementation. Future OCR or VLM providers can supply their own dependencies and polling interval while sharing the coordinator's safety checks and native actions. Classification without an exact policy-approved app or tab target is observation-only. See [the core design](DESIGN.md) for extension requirements.
+
+`ScriptableBrowser` owns the browser capability registry. Add a new browser only after checking its scripting dictionary and tab identity guarantees. `Theme.swift` defines the palette. No AI monitoring, screen capture, or inference runs in this version.
 
 The [TickTick Open API reference](https://developer.ticktick.com/docs/index.html#/openapi) describes the remote interface. Live sync requires a token and a reachable TickTick service.
 

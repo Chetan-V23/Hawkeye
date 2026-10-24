@@ -8,12 +8,21 @@ final class TaskNotifications: NSObject, UNUserNotificationCenterDelegate {
     private var center: UNUserNotificationCenter?
     private var pending: Task<Void, Never>?
 
-    init(log: ActivityLog) {
+    init(log: ActivityLog, effectsEnabled: Bool = true) {
         self.log = log
         super.init()
-        if Bundle.main.bundleURL.pathExtension == "app" {
+        if effectsEnabled && Bundle.main.bundleURL.pathExtension == "app" {
             center = UNUserNotificationCenter.current()
             center?.delegate = self
+        }
+    }
+
+    func authorizationStatus() async -> FocusPermissionStatus {
+        guard let center else { return .unavailable }
+        switch await center.notificationSettings().authorizationStatus {
+        case .authorized, .provisional, .ephemeral: return .granted
+        case .denied: return .denied
+        default: return .needsAccess
         }
     }
 

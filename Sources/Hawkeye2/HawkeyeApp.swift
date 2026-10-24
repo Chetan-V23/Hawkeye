@@ -13,12 +13,18 @@ struct HawkeyeApp: App {
                 .frame(minWidth: 1200, minHeight: 760)
                 .task { await model.start() }
                 .sheet(isPresented: $model.showSettings) { SettingsView().environmentObject(model) }
+                .sheet(isPresented: $model.showFocusConfiguration) {
+                    DistractionSettingsView(settings: model.distractions, permissions: model.permissions)
+                }
+                .modifier(FocusPermissionsPresentation(permissions: model.permissions))
         }
         .defaultSize(width: 1400, height: 880)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("TickTick settings…") { model.showSettings = true }.keyboardShortcut(",")
+                Button("Focus permissions…") { model.permissions.showSheet = true }
+                Button("Blocked apps and websites…") { model.showFocusConfiguration = true }
             }
             CommandMenu("Tasks") {
                 Button("Sync now") { model.syncNow() }.keyboardShortcut("r", modifiers: [.command, .shift])

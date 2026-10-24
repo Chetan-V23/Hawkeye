@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var editingToken = false
     @State private var checking = false
     @State private var message: String?
+    @State private var showPermissions = false
 
     private var enteringToken: Bool { !model.connected || editingToken }
     private var selectedProject: ProjectOption? { projects.first { $0.id == projectID } }
@@ -51,6 +52,9 @@ struct SettingsView: View {
             Rectangle().fill(Palette.line).frame(height: 1)
             Label("Syncs every minute while Hawkeye is running.", systemImage: "arrow.triangle.2.circlepath")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted)
+            Button("Focus permissions…") {
+                showPermissions = true
+            }.buttonStyle(.plain).foregroundStyle(Palette.green).font(.system(size: 12))
             HStack {
                 if model.connected {
                     Button("Disconnect") {
@@ -77,6 +81,7 @@ struct SettingsView: View {
         }.padding(30).frame(width: 560)
             .background(Palette.background).foregroundStyle(Palette.text).preferredColorScheme(.dark)
             .task { if model.connected { await loadSavedProjects() } }
+            .sheet(isPresented: $showPermissions) { FocusPermissionsView(permissions: model.permissions) }
     }
 
     private var tokenEntry: some View {
