@@ -15,28 +15,28 @@ struct FocusPermissionsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 19) {
             HStack {
-                Eyebrow(text: "FOCUS PERMISSIONS")
+                Eyebrow(text: "Focus permissions")
                 Spacer()
                 Button { dismiss() } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain).accessibilityLabel("Close focus permissions")
             }
-            Text("Protect your task time.").font(.system(size: 30, design: .serif))
-            Text("While a task is active, Hawkeye closes your blocked apps when brought to the front. In Safari and Google Chrome, it closes tabs on your blocked websites and their subdomains. Pausing a task pauses blocking.")
+            Text("Allow focus monitoring").font(.system(size: 30, design: .serif))
+            Text("While a task or Pomodoro timer is active, Hawkeye quits blocked apps you bring to the front. It closes tabs on blocked websites and their subdomains in Safari and Google Chrome. Monitoring continues through Pomodoro breaks and task pauses while the timer is running.")
                 .font(.system(size: 13)).lineSpacing(4)
             if let reason = permissions.disabledReason {
                 Text(reason).font(.system(size: 12)).foregroundStyle(Palette.orange)
             }
             VStack(alignment: .leading, spacing: 15) {
                 row("Notifications", status: permissions.notifications,
-                    explanation: "Shows an alert when your task starts.") { permissions.openNotificationSettings() }
+                    explanation: "Hawkeye sends alerts when tasks start and Pomodoro intervals change.") { permissions.openNotificationSettings() }
                 row("Accessibility", status: permissions.accessibility,
-                    explanation: "Allows computer control for focus assistance. Foreground app detection works without it.") { permissions.openSettings("Privacy_Accessibility") }
+                    explanation: "Allows Hawkeye to control your Mac and read browser text while a task or Pomodoro is active. Hawkeye saves page text and main content in the local activity log at the start of monitoring and every minute. It keeps up to 240 captures. Foreground app detection does not need this permission.") { permissions.openSettings("Privacy_Accessibility") }
                 row("Screen Recording", status: permissions.screenRecording,
-                    explanation: "Allows screen reading for focus assistance. This version does not capture or read your screen.") { permissions.openSettings("Privacy_ScreenCapture") }
+                    explanation: "Hawkeye checks each display and saves a screenshot thumbnail from each to your activity log every minute during monitoring. It keeps up to 240 thumbnails on this Mac.") { Task { await permissions.openScreenRecordingSettings() } }
                 ForEach(permissions.policy.browsers) { browser in
                     VStack(alignment: .leading, spacing: 5) {
                         row("\(browser.name) Automation", status: permissions.automation[browser] ?? .unavailable,
-                            explanation: "Reads tab URLs and closes blocked tabs. Open this browser to grant access.") { permissions.openSettings("Privacy_Automation") }
+                            explanation: "Hawkeye reads tab URLs and closes blocked tabs. Open this browser to grant access.") { permissions.openSettings("Privacy_Automation") }
                         Button("Allow \(browser.name)…") { Task { await permissions.requestAutomation(browser) } }
                             .font(.system(size: 11))
                             .disabled(!permissions.effectsEnabled || permissions.automation[browser] == .requesting
@@ -45,7 +45,7 @@ struct FocusPermissionsView: View {
                     }
                 }
             }.padding(18).background(Palette.card, in: RoundedRectangle(cornerRadius: 11))
-            Text("Browser access is separate from Accessibility and Screen Recording. Hawkeye never opens browsers for setup. Safari and Chrome keep unrelated tabs unless you block the whole app. Firefox has no tab inspection support.")
+            Text("Each browser needs Automation permission separately from Accessibility and Screen Recording. Hawkeye does not open browsers during setup. It leaves unrelated Safari and Chrome tabs open unless you block the whole app. Firefox does not support tab inspection.")
                 .font(.system(size: 11)).foregroundStyle(Palette.muted).lineSpacing(3)
             HStack {
                 Button("Refresh status") { Task { await permissions.refresh() } }.disabled(!permissions.effectsEnabled)

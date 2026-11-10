@@ -21,12 +21,12 @@ public struct TaskScheduleSelection: Equatable, Sendable {
     }
     public mutating func selectAfternoon(_ value: Bool) { hour = hour % 12 + (value ? 12 : 0) }
 
-    /// Compare complete instants, so tomorrow's earlier clock time is still valid.
+    /// Compares dates and times, so an earlier clock time tomorrow is still valid.
     public static func isValidStart(_ date: Date, at now: Date = Date()) -> Bool {
         date.timeIntervalSinceReferenceDate.isFinite && date >= now
     }
 
-    /// The next wall-clock half hour, strictly after the supplied instant.
+    /// Returns the next half hour on the clock, strictly after the supplied time.
     public static func nextHalfHour(after now: Date = Date(), calendar: Calendar = .current) -> Date {
         let minutes = 30 - calendar.component(.minute, from: now) % 30
         let minuteStart = calendar.dateInterval(of: .minute, for: now)?.start ?? now
@@ -34,7 +34,7 @@ public struct TaskScheduleSelection: Equatable, Sendable {
             ?? minuteStart.addingTimeInterval(TimeInterval(minutes * 60))
     }
 
-    /// Reject nonexistent DST times rather than silently moving a task to another time/day.
+    /// Returns nil if the selected time does not exist on that day because of daylight saving time.
     public func resolved(calendar: Calendar = .current) -> Date? {
         guard (0..<24).contains(hour), (0..<60).contains(minute),
               let date = calendar.date(bySettingHour: hour, minute: minute, second: 0,
@@ -45,7 +45,7 @@ public struct TaskScheduleSelection: Equatable, Sendable {
         return date
     }
 
-    /// Clockwise dial index, with zero at twelve o'clock. Coordinates are relative to the center.
+    /// Returns the clockwise dial index, with zero at twelve o'clock. Coordinates are relative to the center.
     public static func dialIndex(dx: Double, dy: Double, divisions: Int) -> Int? {
         guard divisions > 0, dx.isFinite, dy.isFinite, abs(dx) + abs(dy) > 0.00001 else { return nil }
         let turn = 2 * Double.pi

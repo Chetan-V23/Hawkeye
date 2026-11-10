@@ -14,7 +14,7 @@ struct TaskComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            TextField("What would you like to do?", text: $title)
+            TextField("Add a task", text: $title)
                 .font(.system(size: 16)).textFieldStyle(.plain)
                 .focused($titleFocused).onSubmit(addTask)
                 .accessibilityLabel("New task title")
@@ -112,8 +112,8 @@ struct TaskEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Eyebrow(text: "A LITTLE ADJUSTMENT")
-            Text("Edit your task.").font(.system(size: 30, design: .serif))
+            Eyebrow(text: "Task details")
+            Text("Edit task").font(.system(size: 30, design: .serif))
             Form {
                 TextField("Title", text: $title).accessibilityLabel("Edit task title")
                 TextField("Description", text: $taskDescription, axis: .vertical).lineLimit(3...5)

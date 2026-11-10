@@ -19,6 +19,26 @@
             "target": "Hawkeye2",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release Hawkeye2"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Hawkeye2}",
+            "name": "Debug Hawkeye2",
+            "target": "Hawkeye2",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Hawkeye2"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Hawkeye2}",
+            "name": "Release Hawkeye2",
+            "target": "Hawkeye2",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Hawkeye2"
         }
     ]
 }

@@ -24,14 +24,14 @@ final class DistractionSettingsTests: XCTestCase {
         let application = BlockedApplication(bundleID: "com.example.game", name: "A game")
         try settings.addApplication(application)
         try settings.addDomain(" HTTPS://NEWS.Example.COM.:8443/path?q=1 ")
-        XCTAssertEqual(settings.policy.websiteDomains, ["instagram.com", "news.example.com"])
+        XCTAssertEqual(settings.policy.websiteDomains, ["instagram.com", "news.example.com/path"])
         let reloaded = DistractionSettings(preferences: preferences)
         XCTAssertEqual(reloaded.policy, settings.policy)
         try reloaded.removeApplication(application)
         try reloaded.removeDomain("instagram.com")
         let final = DistractionSettings(preferences: preferences)
         XCTAssertEqual(final.policy.applications, DistractionPolicy.standard.applications)
-        XCTAssertEqual(final.policy.websiteDomains, ["news.example.com"])
+        XCTAssertEqual(final.policy.websiteDomains, ["news.example.com/path"])
     }
 
     func testConfigurationRejectsInvalidDuplicateAndOwnApplicationEntries() throws {
@@ -72,6 +72,7 @@ final class DistractionSettingsTests: XCTestCase {
                                            settings: DistractionSettings(preferences: preferences), isolated: true)
         await permissions.start()
         await permissions.requestAccess()
+        await permissions.openScreenRecordingSettings()
         await permissions.requestAutomation(.safari)
         await permissions.refresh(requestNewBrowsers: true)
         XCTAssertFalse(permissions.effectsEnabled)

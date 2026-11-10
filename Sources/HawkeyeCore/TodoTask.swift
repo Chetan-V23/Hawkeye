@@ -68,7 +68,7 @@ public enum TaskValidationError: Error, LocalizedError, Equatable {
         case .emptyTitle: return "Give the task a title."
         case .invalidDuration: return "Duration must be a positive number."
         case .taskNotFound: return "This task could not be found."
-        case .duplicateTask: return "A task with this identity already exists."
+        case .duplicateTask: return "A task with this ID already exists."
         }
     }
 }

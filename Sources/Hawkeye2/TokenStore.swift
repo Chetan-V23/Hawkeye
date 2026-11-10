@@ -96,6 +96,6 @@ enum TokenStore {
 private struct KeychainError: LocalizedError {
     let status: OSStatus
     var errorDescription: String? {
-        "Keychain could not access the TickTick token (\(status)). Unlock your login Keychain and try again."
+        "Keychain returned error \(status) when accessing the TickTick token. Unlock your login Keychain and try again."
     }
 }

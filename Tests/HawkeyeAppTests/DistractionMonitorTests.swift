@@ -12,16 +12,16 @@ final class DistractionMonitorTests: XCTestCase {
         let effects = FakeDistractionEffects()
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(effects.foregroundReads, 0)
-        monitor.update(activeTask: TodoTask(title: "Expired", dueAt: Date().addingTimeInterval(-60), duration: 1))
+        monitor.update(session: .task(TodoTask(title: "Expired", dueAt: Date().addingTimeInterval(-60), duration: 1)))
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(effects.foregroundReads, 0)
         effects.frontmost = .init(bundleID: "com.example.editor", processID: 1)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.foregroundReads > 0 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         XCTAssertTrue(effects.terminated.isEmpty)
         XCTAssertEqual(effects.readCount, 0)
         XCTAssertTrue(log.entries.isEmpty)
@@ -35,9 +35,9 @@ final class DistractionMonitorTests: XCTestCase {
             effects.frontmost = .init(bundleID: application.bundleID, processID: 101)
             let log = makeLog()
             let monitor = makeMonitor(effects, policy: policy, log: log)
-            monitor.update(activeTask: activeTask())
+            monitor.update(session: .task(activeTask()))
             await eventually { !effects.terminated.isEmpty }
-            monitor.update(activeTask: nil)
+            monitor.update(session: nil)
             XCTAssertEqual(effects.terminated.first?.bundleID, application.bundleID)
             XCTAssertEqual(effects.readCount, 0)
             try assertLog(log, messages: ["Detected blocked app \(application.name).", "Closing \(application.name).",
@@ -53,9 +53,9 @@ final class DistractionMonitorTests: XCTestCase {
                                .init(windowID: "1", index: 0, tabID: nil, url: "https://example.com/?q=instagram.com")]
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.closed.count == 2 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         XCTAssertEqual(effects.closed.map(\.index), [3, 1])
         let messages = ["Detected blocked website instagram.com in Safari.", "Closing instagram.com tab in Safari.",
                         "Close command sent for instagram.com tab in Safari."]
@@ -70,7 +70,7 @@ final class DistractionMonitorTests: XCTestCase {
         effects.terminationSucceeds = false
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.terminationAttempts.count >= 3 }
         let failed = ["Detected blocked app Chess.", "Closing Chess.",
                       "Could not send force-quit request for Chess. Will retry while it is in front."]
@@ -80,7 +80,7 @@ final class DistractionMonitorTests: XCTestCase {
         await eventually { effects.terminated.count == 1 }
         effects.frontmost = application
         await eventually { effects.terminated.count == 2 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         try assertLog(log, messages: failed + ["Force-quit request sent for Chess.", "Detected blocked app Chess.",
                                               "Closing Chess.", "Force-quit request sent for Chess."])
     }
@@ -92,7 +92,7 @@ final class DistractionMonitorTests: XCTestCase {
         effects.terminationSucceeds = false
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.terminationAttempts.count >= 2 }
         effects.frontmost = .init(bundleID: "com.example.editor", processID: 103)
         let reads = effects.foregroundReads
@@ -100,7 +100,7 @@ final class DistractionMonitorTests: XCTestCase {
         XCTAssertEqual(log.entries.count, 3)
         effects.frontmost = application
         await eventually { log.entries.count == 6 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         XCTAssertEqual(log.entries.filter { $0.category == "Focus detection" }.count, 2)
     }
 
@@ -111,7 +111,7 @@ final class DistractionMonitorTests: XCTestCase {
         effects.closeHandler = { _ in false }
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.closeAttempts.count >= 3 }
         let skipped = ["Detected blocked website instagram.com in Safari.", "Closing instagram.com tab in Safari.",
                        "Skipped instagram.com tab in Safari after revalidation."]
@@ -123,7 +123,7 @@ final class DistractionMonitorTests: XCTestCase {
         effects.closeHandler = { _ in true }
         effects.observedTabs = [blockedTab]
         await eventually { effects.closed.count == 1 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         try assertLog(log, messages: skipped + ["Detected blocked website instagram.com in Safari.", "Closing instagram.com tab in Safari.",
                                                "Close command sent for instagram.com tab in Safari."])
     }
@@ -143,9 +143,9 @@ final class DistractionMonitorTests: XCTestCase {
             effects.closeHandler = { _ in throw failure }
             let log = makeLog()
             let monitor = makeMonitor(effects, log: log)
-            monitor.update(activeTask: activeTask())
+            monitor.update(session: .task(activeTask()))
             await eventually { effects.closeAttempts.count >= 3 }
-            monitor.update(activeTask: nil)
+            monitor.update(session: nil)
             XCTAssertTrue(effects.closed.isEmpty)
             try assertLog(log, messages: ["Detected blocked website instagram.com in Safari.", "Closing instagram.com tab in Safari.",
                                          "Could not close instagram.com tab in Safari. \(reason)"])
@@ -159,13 +159,13 @@ final class DistractionMonitorTests: XCTestCase {
         effects.observedTabs = [blockedTab]
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.foregroundReads >= 3 }
         let unavailable = "Cannot inspect or close blocked website tabs in Safari. Allow Automation access in Focus permissions."
         try assertLog(log, messages: [unavailable])
         effects.automationGranted = true
         await eventually { effects.closed.count == 1 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         try assertLog(log, messages: [unavailable, "Detected blocked website instagram.com in Safari.", "Closing instagram.com tab in Safari.",
                                      "Close command sent for instagram.com tab in Safari."])
     }
@@ -178,11 +178,11 @@ final class DistractionMonitorTests: XCTestCase {
         effects.closeHandler = { _ in throw failure }
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.closeAttempts.count >= 3 }
         failure = .failed
         await eventually { log.entries.count == 4 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         try assertLog(log, messages: ["Detected blocked website instagram.com in Safari.", "Closing instagram.com tab in Safari.",
                                      "Could not close instagram.com tab in Safari. Browser command timed out.",
                                      "Could not close instagram.com tab in Safari. Browser command failed."])
@@ -196,13 +196,13 @@ final class DistractionMonitorTests: XCTestCase {
         effects.closeHandler = { _ in _ = await gate.wait(); return false }
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.closeAttempts.count == 1 }
         monitor.update(policy: .init(applications: [], websiteDomains: ["instagram.com", "example.org"]))
         effects.closeHandler = nil
         await gate.resume([])
         await eventually { effects.closed.count == 1 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         let attempted = ["Detected blocked website instagram.com in Safari.", "Closing instagram.com tab in Safari."]
         try assertLog(log, messages: attempted + attempted + ["Close command sent for instagram.com tab in Safari."])
     }
@@ -213,9 +213,9 @@ final class DistractionMonitorTests: XCTestCase {
         effects.observedTabs = [.init(windowID: "1", index: 0, tabID: nil, url: "https://example.com/?q=instagram.com")]
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.readCount >= 2 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         XCTAssertTrue(log.entries.isEmpty)
         XCTAssertTrue(effects.closeAttempts.isEmpty)
     }
@@ -225,13 +225,13 @@ final class DistractionMonitorTests: XCTestCase {
         effects.frontmost = safari
         effects.automationGranted = false
         let monitor = makeMonitor(effects)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.foregroundReads > 0 }
         XCTAssertEqual(effects.readCount, 0)
         effects.automationGranted = true
         monitor.update(policy: .init(applications: [], websiteDomains: []))
         try await Task.sleep(for: .milliseconds(40))
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         XCTAssertEqual(effects.readCount, 0)
     }
 
@@ -246,15 +246,15 @@ final class DistractionMonitorTests: XCTestCase {
             return await withTaskCancellationHandler { await gate.wait() } onCancel: { cancelled.fulfill() }
         }
         let monitor = makeMonitor(effects)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await fulfillment(of: [reading], timeout: 1)
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         effects.readHandler = { [] }
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await fulfillment(of: [cancelled], timeout: 1)
         await gate.resume([blockedTab])
         await eventually { effects.readCount >= 2 }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         XCTAssertTrue(effects.closed.isEmpty)
     }
 
@@ -267,13 +267,13 @@ final class DistractionMonitorTests: XCTestCase {
             var now = Date()
             let task = TodoTask(title: "Task", dueAt: now.addingTimeInterval(-1), duration: 60)
             let monitor = makeMonitor(effects, now: { now })
-            monitor.update(activeTask: task)
+            monitor.update(session: .task(task))
             await eventually { effects.readCount == 1 }
             if changeForeground { effects.frontmost = .init(bundleID: "com.example.editor", processID: 200) }
             else { now = try XCTUnwrap(task.endsAt) }
             await gate.resume([blockedTab])
             try await Task.sleep(for: .milliseconds(40))
-            monitor.update(activeTask: nil)
+            monitor.update(session: nil)
             XCTAssertTrue(effects.closed.isEmpty)
         }
     }
@@ -284,13 +284,13 @@ final class DistractionMonitorTests: XCTestCase {
         let gate = ReadGate()
         effects.readHandler = { await gate.wait() }
         let monitor = makeMonitor(effects)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.readCount == 1 }
         monitor.update(policy: .init(applications: [], websiteDomains: ["example.org"]))
         effects.readHandler = { [.init(windowID: "2", index: 0, tabID: nil, url: "https://sub.example.org")] }
         await gate.resume([blockedTab])
         await eventually { !effects.closed.isEmpty }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         XCTAssertEqual(effects.closed.map(\.url), ["https://sub.example.org"])
     }
 
@@ -300,12 +300,12 @@ final class DistractionMonitorTests: XCTestCase {
         effects.readHandler = { throw CommandFailure.timedOut }
         let log = makeLog()
         let monitor = makeMonitor(effects, log: log)
-        monitor.update(activeTask: activeTask())
+        monitor.update(session: .task(activeTask()))
         await eventually { effects.readCount >= 2 }
         XCTAssertEqual(log.entries.count, 1)
         effects.readHandler = { [self.blockedTab] }
         await eventually { !effects.closed.isEmpty }
-        monitor.update(activeTask: nil)
+        monitor.update(session: nil)
         XCTAssertFalse(log.entries.contains { $0.message.contains("https://") })
     }
 

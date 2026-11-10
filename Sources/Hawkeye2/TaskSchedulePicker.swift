@@ -64,7 +64,7 @@ struct TaskSchedulePicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Make time for it.").font(.system(size: 24, design: .serif))
+                Text("Task start time").font(.system(size: 24, design: .serif))
                 Text(validationMessage ?? "Choose when this task starts.")
                     .font(.system(size: 12)).foregroundStyle(validationMessage == nil ? Palette.muted : Palette.orange)
             }.fixedSize(horizontal: false, vertical: true)

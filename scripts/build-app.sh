@@ -40,7 +40,8 @@ cat > "$task_bundle/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSAppleEventsUsageDescription</key><string>Hawkeye reads browser tab URLs and closes blocked tabs while your task is active.</string>
+    <key>LSUIElement</key><true/>
+    <key>NSAppleEventsUsageDescription</key><string>Hawkeye reads browser tab URLs and YouTube video categories and closes blocked tabs while a task or Pomodoro timer is active.</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict></plist>
 PLIST

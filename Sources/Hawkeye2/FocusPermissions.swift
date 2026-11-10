@@ -32,10 +32,12 @@ final class FocusPermissions: ObservableObject {
     private let settings: DistractionSettings
     private let effectsRequested: Bool
     private let taskNotifications: TaskNotifications
+    private var screenRecordingRequest: Task<Void, Never>?
     private var pendingBrowsers = Set<ScriptableBrowser>()
     private var observers: [NSObjectProtocol] = []
     private var settingsListener: AnyCancellable?
     private let setupKey = "focusPermissions.requested.v1"
+    private var automaticRequestsAllowed = false
 
     init(effectsRequested: Bool, preferences: UserDefaults, notifications: TaskNotifications,
          settings: DistractionSettings, isolated: Bool = false) {
@@ -46,7 +48,7 @@ final class FocusPermissions: ObservableObject {
         effectsEnabled = effectsRequested && !isolated && Bundle.main.bundleURL.pathExtension == "app"
         if isolated { disabledReason = "This isolated session never requests permissions, inspects applications, or closes anything." }
         else if !effectsRequested { disabledReason = "System access is disabled in this test session." }
-        else if !effectsEnabled { disabledReason = "Open the signed, packaged Hawkeye app to grant permissions and enable blocking. A swift run process cannot reliably own macOS permissions." }
+        else if !effectsEnabled { disabledReason = "Open the signed Hawkeye app to grant permissions and enable blocking. macOS cannot reliably assign permissions to an app started with swift run." }
         else { disabledReason = nil }
         settingsListener = settings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         for browser in policy.browsers { automation[browser] = .unavailable }
@@ -69,6 +71,7 @@ final class FocusPermissions: ObservableObject {
     }
 
     func start() async {
+        automaticRequestsAllowed = true
         guard effectsEnabled else { showSheet = effectsRequested; return }
         await refresh()
         guard !preferences.bool(forKey: setupKey) else {
@@ -87,12 +90,7 @@ final class FocusPermissions: ObservableObject {
         await taskNotifications.requestAuthorization()
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                _ = CGRequestScreenCaptureAccess()
-                continuation.resume()
-            }
-        }
+        await requestScreenRecordingAccess()
         await refresh()
         await requestRunningBrowsers()
     }
@@ -101,13 +99,14 @@ final class FocusPermissions: ObservableObject {
         guard effectsEnabled else { return }
         notifications = await taskNotifications.authorizationStatus()
         accessibility = AXIsProcessTrusted() ? .granted : .needsAccess
-        screenRecording = CGPreflightScreenCaptureAccess() ? .granted : .needsAccess
+        screenRecording = screenRecordingRequest == nil
+            ? (CGPreflightScreenCaptureAccess() ? .granted : .needsAccess) : .requesting
         for browser in policy.browsers where !pendingBrowsers.contains(browser) {
             guard isInstalled(browser) else { automation[browser] = .notInstalled; continue }
             guard isRunning(browser) else { automation[browser] = .notRunning; continue }
             automation[browser] = await Self.automationStatus(browser, ask: false)
         }
-        if requestNewBrowsers { await requestRunningBrowsers() }
+        if requestNewBrowsers && automaticRequestsAllowed { await requestRunningBrowsers() }
     }
 
     func requestAutomation(_ browser: ScriptableBrowser) async {
@@ -126,6 +125,13 @@ final class FocusPermissions: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    func openScreenRecordingSettings() async {
+        guard effectsEnabled else { return }
+        // Requesting registers Hawkeye in the permission list before Settings opens.
+        await requestScreenRecordingAccess()
+        openSettings("Privacy_ScreenCapture")
+    }
+
     func openNotificationSettings() {
         guard effectsEnabled, let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
         NSWorkspace.shared.open(url)
@@ -135,6 +141,27 @@ final class FocusPermissions: ObservableObject {
         for browser in policy.browsers where !preferences.bool(forKey: automationKey(browser)) {
             await requestAutomation(browser)
         }
+    }
+
+    private func requestScreenRecordingAccess() async {
+        if let request = screenRecordingRequest {
+            await request.value
+            return
+        }
+        guard !CGPreflightScreenCaptureAccess() else { screenRecording = .granted; return }
+        screenRecording = .requesting
+        let request = Task {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    _ = CGRequestScreenCaptureAccess()
+                    continuation.resume()
+                }
+            }
+        }
+        screenRecordingRequest = request
+        await request.value
+        screenRecordingRequest = nil
+        screenRecording = CGPreflightScreenCaptureAccess() ? .granted : .needsAccess
     }
 
     private func automationKey(_ browser: ScriptableBrowser) -> String { "focusPermissions.automation.\(browser.bundleID).v1" }

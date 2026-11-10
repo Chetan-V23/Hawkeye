@@ -10,11 +10,11 @@ struct DeferTaskView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Eyebrow(text: "MAKE SOME SPACE")
-            Text("Find another time.").font(.system(size: 30, design: .serif))
+            Eyebrow(text: "Task schedule")
+            Text("Reschedule task").font(.system(size: 30, design: .serif))
             Text(task.title).font(.system(size: 14, weight: .medium)).lineLimit(3)
             TaskScheduleButton(date: $start).accessibilityLabel("New task start time")
-            Text("\(Int(task.effectiveDuration / 60)) minutes · Your new time syncs to TickTick.")
+            Text("Duration: \(Int(task.effectiveDuration / 60)) minutes. The new start time syncs to TickTick.")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted)
             if start <= now {
                 Text("Choose a start time in the future.").font(.system(size: 12)).foregroundStyle(Palette.orange)

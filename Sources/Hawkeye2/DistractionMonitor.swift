@@ -34,7 +34,7 @@ final class DistractionMonitor {
     private let log: ActivityLog
     private let now: () -> Date
     private let intervalOverride: Duration?
-    private var activeTask: TodoTask?
+    private var activity: MonitoringSession?
     private var loop: Task<Void, Never>?
     private var generation = 0
     private var suppressed: SuppressedEvent?
@@ -52,9 +52,9 @@ final class DistractionMonitor {
 
     deinit { loop?.cancel() }
 
-    func update(activeTask task: TodoTask?) {
-        guard activeTask != task else { return }
-        activeTask = task
+    func update(session: MonitoringSession?) {
+        guard activity != session else { return }
+        activity = session
         restart()
     }
 
@@ -74,7 +74,7 @@ final class DistractionMonitor {
         let previous = loop
         previous?.cancel()
         suppressed = nil
-        guard activeTask?.isWithinScheduledWindow(at: now()) == true else { return }
+        guard activity?.isActive(at: now()) == true else { return }
         let generation = generation
         let interval = intervalOverride ?? detector.pollingInterval
         loop = Task { [weak self] in
@@ -89,14 +89,15 @@ final class DistractionMonitor {
     }
 
     private func isCurrent(_ generation: Int) -> Bool {
-        !Task.isCancelled && self.generation == generation && activeTask?.isWithinScheduledWindow(at: now()) == true
+        !Task.isCancelled && self.generation == generation && activity?.isActive(at: now()) == true
     }
 
     private func inspect(generation: Int) async {
-        guard isCurrent(generation), let task = activeTask, let deadline = task.endsAt else { return }
+        guard isCurrent(generation), let activity else { return }
+        let deadline = activity.operationDeadline(at: now())
         guard let application = actions.frontmostApplication() else { suppressed = nil; return }
         if suppressed?.target.application != application { suppressed = nil }
-        let context = DetectionContext(task: task, policy: policy, deadline: deadline, foregroundApplication: application)
+        let context = DetectionContext(session: activity, policy: policy, deadline: deadline, foregroundApplication: application)
         let detector = detector
         let report: DetectionReport
         do {
@@ -106,7 +107,7 @@ final class DistractionMonitor {
         } catch {
             report = .failure(DetectionFailure(error))
         }
-        guard isCurrent(generation), actions.frontmostApplication() == application else { return }
+        guard now() < context.deadline, isCurrent(generation), actions.frontmostApplication() == application else { return }
         switch report {
         case .findings(let findings):
             await enforce(findings, context: context, method: detector.method, generation: generation)
@@ -125,7 +126,7 @@ final class DistractionMonitor {
     private func enforce(_ findings: [DistractionFinding], context: DetectionContext,
                          method: MonitoringMethod, generation: Int) async {
         let application = context.foregroundApplication
-        guard isCurrent(generation), actions.frontmostApplication() == application else { return }
+        guard now() < context.deadline, isCurrent(generation), actions.frontmostApplication() == application else { return }
         if let blocked = policy.applications.first(where: { $0.bundleID == application.bundleID }),
            findings.contains(.application(application)) {
             let target = SuppressionTarget.application(application)
@@ -134,7 +135,7 @@ final class DistractionMonitor {
                 log.record("Focus detection", "Detected blocked app \(blocked.name).")
                 log.record("Focus block", "Closing \(blocked.name).")
             }
-            guard isCurrent(generation), actions.frontmostApplication() == application else { return }
+            guard now() < context.deadline, isCurrent(generation), actions.frontmostApplication() == application else { return }
             if actions.terminate(application) {
                 log.record("Focus block", "Force-quit request sent for \(blocked.name).")
                 suppressed = nil
@@ -146,36 +147,34 @@ final class DistractionMonitor {
         }
         var failedTargetStillPresent = false
         var hasActionableTab = false
-        if !policy.applications.contains(where: { $0.bundleID == application.bundleID }), !policy.websiteDomains.isEmpty,
+        if !policy.applications.contains(where: { $0.bundleID == application.bundleID }), policy.inspectsBrowserTabs,
            let browser = policy.browsers.first(where: { $0.bundleID == application.bundleID }) {
-            let tabs = findings.compactMap { finding -> BrowserTab? in
-                guard case .browserTab(let foundApplication, let foundBrowser, let tab) = finding,
-                      foundApplication == application, foundBrowser == browser,
-                      !tab.windowID.isEmpty, tab.index >= 0,
-                      browser != .chrome || tab.tabID?.isEmpty == false,
-                      policy.blockedDomain(for: tab.url) != nil else { return nil }
-                return tab
+            let tabs = findings.compactMap { finding in
+                authorizedTab(finding, application: application, browser: browser)
             }
             hasActionableTab = !tabs.isEmpty
             // Safari identifies tabs by position. Descending positions keep remaining observations valid after a close.
-            for tab in tabs.sorted(by: { $0.windowID == $1.windowID ? $0.index > $1.index : $0.windowID > $1.windowID }) {
-                guard isCurrent(generation), actions.frontmostApplication() == application else { return }
+            for blocked in tabs.sorted(by: { $0.tab.windowID == $1.tab.windowID ? $0.tab.index > $1.tab.index : $0.tab.windowID > $1.tab.windowID }) {
+                let tab = blocked.tab
+                guard now() < context.deadline, isCurrent(generation), actions.frontmostApplication() == application else { return }
                 guard actions.canAutomate(browser) else {
                     recordUnavailable(.browserAutomation(browser), context: context, method: method)
                     return
                 }
-                guard let domain = policy.blockedDomain(for: tab.url), let deadline = activeTask?.endsAt else { continue }
+                guard let activity else { continue }
+                let domain = blocked.label
+                let deadline = min(context.deadline, activity.operationDeadline(at: now()))
                 let target = SuppressionTarget.tab(application, browser, tab)
                 let report = suppressed?.target != target
                 if !report { failedTargetStillPresent = true }
                 if report {
-                    log.record("Focus detection", "Detected blocked website \(domain) in \(browser.name).")
+                    log.record("Focus detection", "Detected \(blocked.description) in \(browser.name).")
                     log.record("Focus block", "Closing \(domain) tab in \(browser.name).")
                 }
-                guard isCurrent(generation), actions.frontmostApplication() == application, actions.canAutomate(browser) else { return }
+                guard now() < context.deadline, isCurrent(generation), actions.frontmostApplication() == application, actions.canAutomate(browser) else { return }
                 do {
                     let sent = try await actions.close(tab, in: browser, application: application, before: deadline)
-                    guard isCurrent(generation) else { return }
+                    guard now() < context.deadline, isCurrent(generation) else { return }
                     let stillEligible = actions.frontmostApplication() == application && actions.canAutomate(browser)
                     if sent {
                         log.record("Focus block", "Close command sent for \(domain) tab in \(browser.name).")
@@ -189,7 +188,7 @@ final class DistractionMonitor {
                 } catch is CancellationError {
                     return
                 } catch {
-                    guard isCurrent(generation), actions.frontmostApplication() == application else { return }
+                    guard now() < context.deadline, isCurrent(generation), actions.frontmostApplication() == application else { return }
                     recordFailure(DetectionFailure(error), target: target, action: "close \(domain) tab in \(browser.name)")
                     return
                 }
@@ -206,12 +205,36 @@ final class DistractionMonitor {
         if !failedTargetStillPresent { suppressed = nil }
     }
 
+    private func authorizedTab(_ finding: DistractionFinding, application: ForegroundApplication,
+                               browser: ScriptableBrowser) -> (tab: BrowserTab, label: String, description: String)? {
+        let foundApplication: ForegroundApplication, foundBrowser: ScriptableBrowser, tab: BrowserTab
+        let label: String, description: String
+        switch finding {
+        case .browserTab(let app, let source, let foundTab):
+            guard let domain = policy.blockedDomain(for: foundTab.url) else { return nil }
+            (foundApplication, foundBrowser, tab) = (app, source, foundTab)
+            label = domain
+            description = "blocked website \(domain)"
+        case .youtubeCategoryTab(let app, let source, let foundTab, let categoryIDs):
+            guard policy.youtubeCategories.blocks(foundTab.url, categoryIDs: categoryIDs) else { return nil }
+            (foundApplication, foundBrowser, tab) = (app, source, foundTab)
+            label = "YouTube"
+            description = categoryIDs.isEmpty ? "YouTube tab with an unavailable category"
+                : "YouTube tab outside the category whitelist"
+        default: return nil
+        }
+        guard foundApplication == application, foundBrowser == browser,
+              !tab.windowID.isEmpty, tab.index >= 0,
+              browser != .chrome || tab.tabID?.isEmpty == false else { return nil }
+        return (tab, label, description)
+    }
+
     private func recordUnavailable(_ capability: DetectionCapability, context: DetectionContext, method: MonitoringMethod) {
         let application = context.foregroundApplication
         let message: String
         switch capability {
         case .browserAutomation(let browser):
-            guard !policy.websiteDomains.isEmpty, browser.bundleID == application.bundleID,
+            guard policy.inspectsBrowserTabs, browser.bundleID == application.bundleID,
                   !policy.applications.contains(where: { $0.bundleID == application.bundleID }),
                   policy.browsers.contains(browser), !actions.canAutomate(browser) else { return }
             message = "Cannot inspect or close blocked website tabs in \(browser.name). Allow Automation access in Focus permissions."

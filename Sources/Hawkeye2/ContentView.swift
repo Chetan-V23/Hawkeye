@@ -23,7 +23,7 @@ struct ContentView: View {
         .font(.system(size: 13)).tint(Palette.green)
         .sheet(item: $editingTask) { task in TaskEditor(task: task).environmentObject(model) }
         .sheet(item: $deferringTask) { task in DeferTaskView(task: task).environmentObject(model) }
-        .alert("Something needs attention", isPresented: Binding(
+        .alert("Hawkeye error", isPresented: Binding(
             get: { model.error != nil }, set: { if !$0 { model.error = nil } }
         )) {
             Button("OK") { model.error = nil }
@@ -39,21 +39,21 @@ struct ContentView: View {
                     .foregroundStyle(Palette.green).padding(5)
                     .background(Palette.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
             }.padding(.bottom, 46)
-            Eyebrow(text: "THE DONE LIST")
+            Eyebrow(text: "Task history")
             HStack(alignment: .firstTextBaseline) {
-                Text("Look at you go.").font(.system(size: 25, weight: .medium, design: .serif))
+                Text("Completed tasks").font(.system(size: 25, weight: .medium, design: .serif))
                 Spacer(minLength: 4)
                 Text("\(model.completedTasks.count)").monospacedDigit().foregroundStyle(Palette.muted)
             }.padding(.top, 12)
-            Text("Small wins. Real progress.").foregroundStyle(Palette.muted).padding(.top, 9).padding(.bottom, 25)
+            Text("Click a checkmark to reopen a task.").foregroundStyle(Palette.muted).padding(.top, 9).padding(.bottom, 25)
             Rectangle().fill(Palette.line).frame(height: 1)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     if model.completedTasks.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Image(systemName: "checkmark.seal").font(.system(size: 28, weight: .ultraLight))
-                            Text("Your first win belongs here.").font(.system(size: 14))
-                            Text("Complete a task to start your done list.").font(.system(size: 12)).lineSpacing(4)
+                            Text("No completed tasks yet.").font(.system(size: 14))
+                            Text("Complete a task to add it here.").font(.system(size: 12)).lineSpacing(4)
                         }.foregroundStyle(Palette.muted).padding(.top, 8)
                     }
                     ForEach(model.completedTasks) { task in
@@ -61,7 +61,7 @@ struct ContentView: View {
                             Button { model.reopen(task.id) } label: {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.green.opacity(0.7))
                             }.buttonStyle(.plain).disabled(model.saving)
-                                .help("Move back to to-dos")
+                                .help("Reopen task")
                                 .accessibilityLabel("Reopen \(task.title)")
                             VStack(alignment: .leading, spacing: 7) {
                                 Text(task.title).strikethrough().foregroundStyle(Palette.muted).lineLimit(3)
@@ -79,13 +79,13 @@ struct ContentView: View {
             Spacer(minLength: 12)
             VStack(alignment: .leading, spacing: 12) {
                 Image(systemName: "leaf").foregroundStyle(Palette.green)
-                Text("A little further along.").font(.system(size: 21, design: .serif))
-                Text("ONE THING AT A TIME.").font(.system(size: 8, weight: .medium)).tracking(1.5).foregroundStyle(Palette.muted)
+                Text("Start another task.").font(.system(size: 21, design: .serif))
+                Text("Choose Start now in its menu.").font(.system(size: 8, weight: .medium)).tracking(1.5).foregroundStyle(Palette.muted)
             }.padding(21).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Palette.green.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
             HStack(spacing: 7) {
                 Circle().fill(Palette.green).frame(width: 5, height: 5)
-                Text("Local by default.").font(.system(size: 10)).foregroundStyle(Palette.muted)
+                Text("Saved on this Mac.").font(.system(size: 10)).foregroundStyle(Palette.muted)
             }.padding(.top, 24)
         }
         .padding(.horizontal, 29).padding(.top, 37).padding(.bottom, 25)
@@ -99,13 +99,13 @@ struct ContentView: View {
                     .textCase(.uppercase).tracking(1.5).font(.system(size: 10, weight: .medium))
                 Spacer()
             }.foregroundStyle(Palette.muted).padding(.bottom, 30)
-            Text("Make room for\nwhat matters.")
+            Text("Plan your\nnext task.")
                 .font(.system(size: 46, weight: .regular, design: .serif)).tracking(-1.7).lineSpacing(-2)
-            Text("One task. A little more space to think.")
+            Text("Add a task and choose when to start.")
                 .foregroundStyle(Palette.muted).padding(.top, 13).padding(.bottom, 25)
             TaskComposer().environmentObject(model).disabled(!model.ready)
             HStack(spacing: 9) {
-                Eyebrow(text: "ON YOUR HORIZON")
+                Eyebrow(text: "Pending tasks")
                 Text("\(visibleTasks.count)").font(.system(size: 10, design: .monospaced))
                     .padding(.horizontal, 7).padding(.vertical, 3)
                     .background(Palette.card, in: Capsule()).foregroundStyle(Palette.muted)
@@ -136,9 +136,9 @@ struct ContentView: View {
                     if visibleTasks.isEmpty {
                         VStack(spacing: 12) {
                             Image(systemName: "leaf").font(.system(size: 28, weight: .ultraLight)).foregroundStyle(Palette.green)
-                            Text(filter == .all ? "A clear horizon." : "Nothing here just now.")
+                            Text(filter == .all ? "No pending tasks." : "No tasks match this filter.")
                                 .font(.system(size: 23, design: .serif))
-                            Text(filter == .all ? "Add one thing you'd like to make progress on." : "Choose All tasks to see the rest.")
+                            Text(filter == .all ? "Add a task above." : "Choose All tasks to see the rest.")
                                 .foregroundStyle(Palette.muted).font(.system(size: 12))
                         }.frame(maxWidth: .infinity).padding(.vertical, 34)
                     }
@@ -152,7 +152,7 @@ struct ContentView: View {
             HStack(spacing: 9) {
                 Circle().fill(model.connected ? Palette.green : Palette.muted).frame(width: 5, height: 5)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(model.connected ? "TickTick connected" : "Your tasks, on your Mac")
+                    Text(model.connected ? "TickTick connected" : "Tasks saved on this Mac")
                         .font(.system(size: 11, weight: .medium))
                     Text(model.syncStatus).font(.system(size: 10)).foregroundStyle(Palette.muted)
                         .lineLimit(2).help(model.syncStatus)
@@ -243,8 +243,8 @@ struct TaskRow: View {
     }
 
     private func saveCompletion() {
-        model.complete(task.id) { success in
-            if !success { completionPhase = .idle }
+        model.complete(task.id) { _ in
+            completionPhase = .idle
         }
     }
 
@@ -255,7 +255,7 @@ struct TaskRow: View {
     @ViewBuilder
     private var taskOptions: some View {
         if !active {
-            Button("Start Now") { model.startNow(task) }
+            Button("Start now") { model.startNow(task) }
                 .disabled(model.activeTaskID != nil)
                 .help(model.activeTaskID != nil ? "Another task is active." : "Start this task now and sync its new start time to TickTick.")
             if model.activeTaskID != nil {

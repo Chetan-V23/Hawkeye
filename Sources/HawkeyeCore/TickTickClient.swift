@@ -336,7 +336,7 @@ public enum TickTickError: Error, LocalizedError, Equatable {
         case .remoteTaskMissing: return "The TickTick task could not be found. Your local changes are saved."
         case .httpStatus(401), .httpStatus(403): return "TickTick rejected access. Check your personal access token and project permissions."
         case .httpStatus(429): return "TickTick is limiting requests. Your changes are saved for the next sync."
-        case .httpStatus(let status): return "TickTick request failed (HTTP \(status)). Your changes are saved for retry."
+        case .httpStatus(let status): return "TickTick request failed with HTTP status \(status). Your changes are saved for retry."
         }
     }
 }

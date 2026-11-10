@@ -3,23 +3,42 @@ import UserNotifications
 import HawkeyeCore
 
 @MainActor
+protocol NotificationDelivering {
+    func authorizationStatus() async -> UNAuthorizationStatus
+    func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool
+    func add(_ request: UNNotificationRequest) async throws
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String])
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String])
+}
+
+extension UNUserNotificationCenter: NotificationDelivering {
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await notificationSettings().authorizationStatus
+    }
+}
+
+@MainActor
 final class TaskNotifications: NSObject, UNUserNotificationCenterDelegate {
     private let log: ActivityLog
-    private var center: UNUserNotificationCenter?
+    private var center: (any NotificationDelivering)?
     private var pending: Task<Void, Never>?
+    private var pendingPomodoro: Task<Void, Never>?
+    private var pomodoroIdentifier: String?
 
-    init(log: ActivityLog, effectsEnabled: Bool = true) {
+    init(log: ActivityLog, effectsEnabled: Bool = true, center: (any NotificationDelivering)? = nil) {
         self.log = log
+        self.center = center
         super.init()
-        if effectsEnabled && Bundle.main.bundleURL.pathExtension == "app" {
-            center = UNUserNotificationCenter.current()
-            center?.delegate = self
+        if center == nil && effectsEnabled && Bundle.main.bundleURL.pathExtension == "app" {
+            let nativeCenter = UNUserNotificationCenter.current()
+            nativeCenter.delegate = self
+            self.center = nativeCenter
         }
     }
 
     func authorizationStatus() async -> FocusPermissionStatus {
         guard let center else { return .unavailable }
-        switch await center.notificationSettings().authorizationStatus {
+        switch await center.authorizationStatus() {
         case .authorized, .provisional, .ephemeral: return .granted
         case .denied: return .denied
         default: return .needsAccess
@@ -45,9 +64,9 @@ final class TaskNotifications: NSObject, UNUserNotificationCenterDelegate {
             pending?.cancel()
             pending = Task { [weak self] in
                 guard let self, let center = self.center else { return }
-                let settings = await center.notificationSettings()
+                let status = await center.authorizationStatus()
                 guard !Task.isCancelled else { return }
-                guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+                guard status == .authorized || status == .provisional else {
                     self.log.record("Notifications", "Start alert unavailable for \(task.title). Notification permission is disabled.")
                     return
                 }
@@ -75,6 +94,46 @@ final class TaskNotifications: NSObject, UNUserNotificationCenterDelegate {
             center?.removeDeliveredNotifications(withIdentifiers: [identifier(for: task)])
         default: break
         }
+    }
+
+    func receive(pomodoro interval: PomodoroTimer.Interval, sessionID: UUID) {
+        pendingPomodoro?.cancel()
+        if let pomodoroIdentifier { center?.removePendingNotificationRequests(withIdentifiers: [pomodoroIdentifier]) }
+        let identifier = "pomodoro-\(sessionID)-\(interval.startedAt.timeIntervalSinceReferenceDate)"
+        pomodoroIdentifier = identifier
+        pendingPomodoro = Task { [weak self] in
+            guard let self, let center = self.center else { return }
+            let status = await center.authorizationStatus()
+            guard !Task.isCancelled else { return }
+            guard status == .authorized || status == .provisional else {
+                self.log.record("Notifications", "Pomodoro alert unavailable. Enable notifications in Focus permissions.")
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = interval.phase == .breakTime ? "Time for a break" : "Time to focus"
+            content.body = interval.phase == .breakTime
+                ? "Your focus timer finished. Drink a glass of water. Monitoring stays active during your break."
+                : "Your break is over. Your next focus session has started."
+            content.sound = .default
+            do {
+                try await center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+                if Task.isCancelled {
+                    center.removePendingNotificationRequests(withIdentifiers: [identifier])
+                    center.removeDeliveredNotifications(withIdentifiers: [identifier])
+                    return
+                }
+                self.log.record("Notifications", "Pomodoro alert sent.")
+            } catch {
+                self.log.record("Notifications", "Pomodoro alert failed. \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func cancelPomodoro() {
+        pendingPomodoro?.cancel()
+        pendingPomodoro = nil
+        if let pomodoroIdentifier { center?.removePendingNotificationRequests(withIdentifiers: [pomodoroIdentifier]) }
+        pomodoroIdentifier = nil
     }
 
     private func identifier(for task: TodoTask) -> String {

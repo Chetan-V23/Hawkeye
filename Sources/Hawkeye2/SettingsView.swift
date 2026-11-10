@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var startup: LaunchAtLogin
     @Environment(\.dismiss) private var dismiss
     @State private var token = ""
     @State private var projectID = ""
@@ -20,12 +21,12 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 21) {
             HStack {
-                Eyebrow(text: "YOUR TASKS, TOGETHER")
+                Eyebrow(text: "TickTick sync")
                 Spacer()
                 Button { dismiss() } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain).accessibilityLabel("Close settings")
             }
-            Text(enteringToken ? (model.connected ? "Change your token." : "Connect TickTick.") : "TickTick connected.")
+            Text(enteringToken ? (model.connected ? "Change token" : "Connect TickTick") : "TickTick connected")
                 .font(.system(size: 32, design: .serif))
             if enteringToken {
                 tokenEntry
@@ -50,6 +51,7 @@ struct SettingsView: View {
                 Text(message).font(.system(size: 12)).foregroundStyle(Palette.orange).textSelection(.enabled)
             }
             Rectangle().fill(Palette.line).frame(height: 1)
+            StartupSettingsView(startup: startup)
             Label("Syncs every minute while Hawkeye is running.", systemImage: "arrow.triangle.2.circlepath")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted)
             Button("Focus permissions…") {
@@ -75,7 +77,7 @@ struct SettingsView: View {
                     }.disabled(checking)
                 }
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(enteringToken ? "Connect & sync" : "Save destination") { save() }
+                Button(enteringToken ? "Connect and sync" : "Save destination") { save() }
                     .buttonStyle(QuietButton()).disabled(!canSave)
             }
         }.padding(30).frame(width: 560)
@@ -88,10 +90,10 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Paste your personal access token. \(model.tokenStorageExplanation)")
                 .font(.system(size: 13)).foregroundStyle(Palette.muted).lineSpacing(5)
-            Text("Create a token in TickTick on the web under Settings → Account → API Token.")
+            Text("To create a token in TickTick on the web, open Settings, then Account, then API Token.")
                 .font(.system(size: 11)).foregroundStyle(Palette.muted).lineSpacing(4)
             VStack(alignment: .leading, spacing: 11) {
-                Eyebrow(text: "PERSONAL ACCESS TOKEN")
+                Eyebrow(text: "Personal access token")
                 SecureField(model.connected ? "Paste your replacement token" : "Paste your TickTick token", text: $token)
                     .textFieldStyle(.roundedBorder).accessibilityLabel("TickTick personal access token")
                     .disabled(checking)

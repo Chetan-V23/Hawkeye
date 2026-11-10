@@ -2,33 +2,41 @@ import SwiftUI
 
 struct FocusPane: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.showActivityLog) private var showActivityLog
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer()
-            EyeArtwork(focused: model.activeTaskID != nil)
-                .padding(.bottom, 28)
-            Text(model.userFocus.snooze != nil ? "Take a breath." : model.activeTaskID != nil ? "One thing." : "Room to breathe.")
-                .font(.system(size: 20, design: .serif)).multilineTextAlignment(.center)
-            if let snooze = model.userFocus.snooze {
-                Text("Paused until \(snooze.until.formatted(date: .omitted, time: .shortened))")
-                    .font(.system(size: 11)).foregroundStyle(Palette.muted).padding(.top, 12)
-            } else if let task = model.activeTask {
-                Text(task.title).font(.system(size: 12)).foregroundStyle(Palette.muted)
-                    .lineLimit(4).multilineTextAlignment(.center).padding(.top, 12)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                EyeArtwork(focused: model.isMonitoringActive)
+                    .padding(.bottom, 12)
+                Text(model.userFocus.snooze != nil ? "Task paused" : model.activeTaskID != nil ? "Task active" : "No active task")
+                    .font(.system(size: 18, design: .serif)).multilineTextAlignment(.center)
+                if let snooze = model.userFocus.snooze {
+                    Text("Paused until \(snooze.until.formatted(date: .omitted, time: .shortened))")
+                        .font(.system(size: 11)).foregroundStyle(Palette.muted).padding(.top, 12)
+                } else if let task = model.activeTask {
+                    Text(task.title).font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        .lineLimit(4).multilineTextAlignment(.center).padding(.top, 12)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Rectangle().fill(Palette.line).frame(height: 1).padding(.vertical, 24)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                PomodoroView()
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack {
                 Spacer()
-                #if DEBUG
-                Button { openWindow(id: "activity") } label: {
+                Button { showActivityLog() } label: {
                     Image(systemName: "waveform.path.ecg").font(.system(size: 14))
                         .frame(width: 30, height: 30)
                         .background(Palette.card, in: RoundedRectangle(cornerRadius: 8))
                 }.buttonStyle(.plain).foregroundStyle(Palette.muted)
-                    .help("Open developer activity log").accessibilityLabel("Open activity log")
-                #endif
+                    .help("Open activity log").accessibilityLabel("Open activity log")
                 Button { model.showFocusConfiguration = true } label: {
                     Image(systemName: "gearshape").font(.system(size: 14))
                         .frame(width: 30, height: 30)

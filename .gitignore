@@ -6,3 +6,14 @@ dist/
 *.xcuserstate
 .signing-identity
 .signing-identity.*
+**/bin/
+**/obj/
+TestResults/
+__pycache__/
+.venv-browser-collector/
+browser_text_samples/
+Desktop/
+docs/
+.github/
+.vscode/
+

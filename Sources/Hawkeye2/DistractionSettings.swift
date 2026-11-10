@@ -37,13 +37,13 @@ final class DistractionSettings: ObservableObject {
     }
 
     func addDomain(_ input: String) throws {
-        let domain = try Self.canonicalDomain(input)
-        guard !policy.websiteDomains.contains(domain) else { throw DistractionSettingsError.duplicateDomain }
-        try save(.init(applications: policy.applications, websiteDomains: policy.websiteDomains + [domain]))
+        let websiteRule = try Self.canonicalWebsiteRule(input)
+        guard !policy.websiteDomains.contains(websiteRule) else { throw DistractionSettingsError.duplicateDomain }
+        try update { $0.websiteDomains.append(websiteRule) }
     }
 
     func removeDomain(_ domain: String) throws {
-        try save(.init(applications: policy.applications, websiteDomains: policy.websiteDomains.filter { $0 != domain }))
+        try update { $0.websiteDomains.removeAll { $0 == domain } }
     }
 
     func addApplication(_ application: BlockedApplication) throws {
@@ -54,7 +54,7 @@ final class DistractionSettings: ObservableObject {
             throw DistractionSettingsError.ownApplication
         }
         guard !policy.applications.contains(where: { $0.bundleID == application.bundleID }) else { throw DistractionSettingsError.duplicateApplication }
-        try save(.init(applications: policy.applications + [application], websiteDomains: policy.websiteDomains))
+        try update { $0.applications.append(application) }
     }
 
     func addApplication(at url: URL) throws {
@@ -67,25 +67,36 @@ final class DistractionSettings: ObservableObject {
     }
 
     func removeApplication(_ application: BlockedApplication) throws {
-        try save(.init(applications: policy.applications.filter { $0.bundleID != application.bundleID }, websiteDomains: policy.websiteDomains))
+        try update { $0.applications.removeAll { $0.bundleID == application.bundleID } }
     }
 
-    nonisolated static func canonicalDomain(_ input: String) throws -> String {
-        let input = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty, !input.contains(where: \.isWhitespace) else { throw DistractionSettingsError.invalidDomain }
-        let source = input.contains("://") ? input : "https://" + input
-        guard let components = URLComponents(string: source),
-              ["https", "http"].contains(components.scheme?.lowercased() ?? ""),
-              components.user == nil, components.password == nil,
-              let host = components.host?.lowercased() else { throw DistractionSettingsError.invalidDomain }
-        let domain = host.hasSuffix(".") ? String(host.dropLast()) : host
-        let labels = domain.split(separator: ".", omittingEmptySubsequences: false)
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
-        guard domain.utf8.count <= 253, labels.count >= 2, labels.allSatisfy({ label in
-            !label.isEmpty && label.utf8.count <= 63 && !label.hasPrefix("-") && !label.hasSuffix("-")
-                && label.unicodeScalars.allSatisfy { allowed.contains($0) }
-        }) else { throw DistractionSettingsError.invalidDomain }
-        return domain
+    func setYouTubeCategoriesEnabled(_ enabled: Bool) throws {
+        try update { $0.youtubeCategories.isEnabled = enabled }
+    }
+
+    func addYouTubeCategory(_ category: YouTubeCategory) throws {
+        guard YouTubeCategory.all.contains(category) else { return }
+        let additions = YouTubeCategory.all.filter {
+            $0.name == category.name && !policy.youtubeCategories.whitelist.contains($0.id)
+        }.map(\.id)
+        guard !additions.isEmpty else { return }
+        try update { $0.youtubeCategories.whitelist.append(contentsOf: additions) }
+    }
+
+    func removeYouTubeCategory(_ id: String) throws {
+        let ids = YouTubeCategory.all.first { $0.id == id }.map { YouTubeCategory.matchingIDs(for: $0.name) } ?? [id]
+        try update { $0.youtubeCategories.whitelist.removeAll { ids.contains($0) } }
+    }
+
+    nonisolated static func canonicalWebsiteRule(_ input: String) throws -> String {
+        guard let rule = BlockedWebsiteRule(input: input) else { throw DistractionSettingsError.invalidDomain }
+        return rule.value
+    }
+
+    private func update(_ change: (inout DistractionPolicy) -> Void) throws {
+        var updated = policy
+        change(&updated)
+        try save(updated)
     }
 
     private func save(_ policy: DistractionPolicy) throws {

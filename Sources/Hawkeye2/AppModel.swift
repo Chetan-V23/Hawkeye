@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
     @Published var showFocusConfiguration = false
     @Published private(set) var activeTaskID: UUID?
     @Published private(set) var userFocus = UserFocusState()
+    @Published private(set) var pomodoro = PomodoroTimer()
     let focusEvents = PassthroughSubject<TaskFocusEvent, Never>()
     let activity: ActivityLog
     let permissions: FocusPermissions
@@ -33,20 +34,25 @@ final class AppModel: ObservableObject {
     private let service: TaskService?
     private let isolated: Bool
     private let preferences: UserDefaults
+    private let pomodoroSettingsURL: URL?
     private let tokenStore: TokenStore
     private var tickTickClient: TickTickClient?
     private var pendingIDs = Set<UUID>()
     private var polling: Task<Void, Never>?
     private var connectionGeneration = 0
     private var focusTimer: Task<Void, Never>?
+    private var pomodoroTick: Task<Void, Never>?
+    private var monitoringTask: TodoTask?
     private var permissionSetup: Task<Void, Never>?
     private var focusListeners = Set<AnyCancellable>()
     private let notifications: TaskNotifications
     private let distractionMonitor: DistractionMonitor
+    private let screenshotMonitor: ScreenshotMonitor?
+    private let browserContentMonitor: BrowserContentMonitor?
     private var started = false
     private var lifecycleReady = false
 
-    init() {
+    init(screenshotProcessors: [any ScreenshotProcessing] = ScreenshotPipeline.defaultProcessors) {
         tokenStore = .defaultStore
         #if DEBUG
         preferences = UserDefaults(suiteName: "com.hawkeye2.mac.development") ?? .standard
@@ -58,6 +64,7 @@ final class AppModel: ObservableObject {
             arguments.indices.contains(index + 1) ? arguments[index + 1] : nil
         } ?? Bundle.main.object(forInfoDictionaryKey: "HawkeyeDataDirectory") as? String
         isolated = directory != nil
+        pomodoroSettingsURL = directory.map { URL(fileURLWithPath: $0).appendingPathComponent("pomodoro.json") }
         activity = ActivityLog(fileURL: directory.map {
             URL(fileURLWithPath: $0).appendingPathComponent("activity.log")
         } ?? ActivityLog.defaultURL)
@@ -69,7 +76,14 @@ final class AppModel: ObservableObject {
                                        settings: distractions, isolated: isolated)
         let nativeMonitoring = MacDistractionEffects(permissions: permissions)
         distractionMonitor = DistractionMonitor(policy: distractions.policy,
-            detector: DeterministicDistractionDetector(observations: nativeMonitoring), actions: nativeMonitoring, log: activity)
+            detector: DeterministicDistractionDetector(observations: nativeMonitoring,
+                youtubeCategories: YouTubeCategoryResolver(sourceReader: nativeMonitoring)), actions: nativeMonitoring, log: activity)
+        screenshotMonitor = permissions.effectsEnabled
+            ? ScreenshotMonitor(capturer: MacScreenshotCapture(effectsEnabled: true), log: activity,
+                                policy: distractions.policy, processors: screenshotProcessors,
+                                actions: MacScreenshotActions(permissions: permissions)) : nil
+        browserContentMonitor = permissions.effectsEnabled
+            ? BrowserContentMonitor(capturer: MacBrowserContentCapture(effectsEnabled: true), log: activity) : nil
         do {
             let defaultStoreURL: URL
             #if DEBUG
@@ -98,6 +112,7 @@ final class AppModel: ObservableObject {
             self.error = "Could not open task storage. Your existing data was left intact. \(error.localizedDescription)"
             syncStatus = "Task storage unavailable. Restart after resolving the error."
         }
+        restorePomodoroConfiguration()
         installFocusListeners()
         activity.record("App", ready ? "Application started. Task storage ready." : "Application started. Task storage unavailable.")
         if let error { activity.record("Storage error", error) }
@@ -105,11 +120,17 @@ final class AppModel: ObservableObject {
 
     init(service: TaskService, client: TickTickClient, project: ProjectOption, preferences: UserDefaults,
          tokenStore: TokenStore = .defaultStore, monitorDetector: (any DistractionDetecting)? = nil,
-         monitorActions: (any DistractionActions)? = nil) {
+         monitorActions: (any DistractionActions)? = nil, screenshotCapturer: (any ScreenshotCapturing)? = nil,
+         screenshotInterval: Duration = .seconds(60),
+         screenshotProcessors: [any ScreenshotProcessing] = ScreenshotPipeline.defaultProcessors,
+         screenshotActions: (any ScreenshotActions)? = nil,
+         browserContentCapturer: (any BrowserContentCapturing)? = nil,
+         browserContentInterval: Duration = .seconds(60)) {
         self.service = service
         self.tokenStore = tokenStore
         tickTickClient = client
         self.preferences = preferences
+        pomodoroSettingsURL = nil
         isolated = false
         connected = true
         projectID = project.id
@@ -122,14 +143,108 @@ final class AppModel: ObservableObject {
         permissions = FocusPermissions(effectsRequested: false, preferences: preferences, notifications: notifications, settings: distractions)
         let nativeMonitoring = MacDistractionEffects(permissions: permissions)
         distractionMonitor = DistractionMonitor(policy: distractions.policy,
-            detector: monitorDetector ?? DeterministicDistractionDetector(observations: nativeMonitoring),
+            detector: monitorDetector ?? DeterministicDistractionDetector(observations: nativeMonitoring,
+                youtubeCategories: YouTubeCategoryResolver(sourceReader: nativeMonitoring)),
             actions: monitorActions ?? nativeMonitoring, log: activity)
+        if let screenshotCapturer {
+            screenshotMonitor = ScreenshotMonitor(capturer: screenshotCapturer, log: activity, interval: screenshotInterval,
+                                                  policy: distractions.policy, processors: screenshotProcessors,
+                                                  actions: screenshotActions)
+        } else { screenshotMonitor = nil }
+        if let browserContentCapturer {
+            browserContentMonitor = BrowserContentMonitor(capturer: browserContentCapturer, log: activity, interval: browserContentInterval)
+        } else { browserContentMonitor = nil }
+        restorePomodoroConfiguration()
         installFocusListeners()
     }
 
-    deinit { polling?.cancel(); focusTimer?.cancel(); permissionSetup?.cancel() }
+    deinit { polling?.cancel(); focusTimer?.cancel(); pomodoroTick?.cancel(); permissionSetup?.cancel() }
 
     var activeTask: TodoTask? { tasks.first { $0.id == activeTaskID } }
+    var isMonitoringActive: Bool { monitoringSession?.isActive(at: now) == true }
+
+    private var monitoringSession: MonitoringSession? {
+        if let session = pomodoro.session { return .pomodoro(session) }
+        return monitoringTask.map(MonitoringSession.task)
+    }
+
+    func configurePomodoro(_ configuration: PomodoroConfiguration) {
+        if let pomodoroSettingsURL {
+            do {
+                let data = try JSONSerialization.data(withJSONObject: ["focusMinutes": configuration.focusMinutes,
+                                                                       "breakMinutes": configuration.breakMinutes])
+                try FileManager.default.createDirectory(at: pomodoroSettingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: pomodoroSettingsURL, options: .atomic)
+            } catch {
+                self.error = "Could not save Pomodoro durations. \(error.localizedDescription)"
+                return
+            }
+        } else {
+            preferences.set(configuration.focusMinutes, forKey: "pomodoro.focusMinutes")
+            preferences.set(configuration.breakMinutes, forKey: "pomodoro.breakMinutes")
+        }
+        pomodoro.configure(configuration)
+    }
+
+    func startPomodoro() {
+        guard pomodoro.session == nil else { return }
+        now = Date()
+        pomodoro.start(at: now)
+        updateMonitoring()
+        activity.record("Pomodoro", "Started focus. Monitoring active.")
+        pomodoroTick = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) }
+                catch { return }
+                guard let self = self else { return }
+                self.advancePomodoro(at: Date())
+            }
+        }
+    }
+
+    func stopPomodoro() {
+        guard pomodoro.session != nil else { return }
+        pomodoroTick?.cancel()
+        pomodoroTick = nil
+        pomodoro.stop()
+        now = Date()
+        notifications.cancelPomodoro()
+        updateMonitoring()
+        activity.record("Pomodoro", "Timer stopped.")
+    }
+
+    func advancePomodoro(at date: Date) {
+        guard pomodoro.session != nil else { return }
+        now = date
+        if let interval = pomodoro.advance(at: date), let session = pomodoro.session {
+            let message = interval.phase == .breakTime
+                ? "Break started. Drink a glass of water. Monitoring remains active."
+                : "Break finished. Focus started. Monitoring remains active."
+            activity.record("Pomodoro", message)
+            notifications.receive(pomodoro: interval, sessionID: session.id)
+        }
+    }
+
+    private func restorePomodoroConfiguration() {
+        if let pomodoroSettingsURL {
+            if let data = try? Data(contentsOf: pomodoroSettingsURL),
+               let values = try? JSONSerialization.jsonObject(with: data) as? [String: Int],
+               let focus = values["focusMinutes"], let rest = values["breakMinutes"],
+               let configuration = PomodoroConfiguration(focusMinutes: focus, breakMinutes: rest) {
+                pomodoro.configure(configuration)
+            }
+            return
+        }
+        let focus = preferences.object(forKey: "pomodoro.focusMinutes") as? Int ?? 25
+        let rest = preferences.object(forKey: "pomodoro.breakMinutes") as? Int ?? 5
+        pomodoro.configure(PomodoroConfiguration(focusMinutes: focus, breakMinutes: rest) ?? .standard)
+    }
+
+    private func updateMonitoring() {
+        distractionMonitor.update(session: monitoringSession)
+        screenshotMonitor?.update(session: monitoringSession)
+        browserContentMonitor?.update(session: monitoringSession)
+    }
     func isActive(_ task: TodoTask) -> Bool { activeTaskID == task.id }
     func canPause(_ task: TodoTask) -> Bool {
         isActive(task) && userFocus.snooze == nil && !userFocus.snoozedTaskIDs.contains(task.id)
@@ -140,7 +255,10 @@ final class AppModel: ObservableObject {
     }
 
     private func installFocusListeners() {
-        distractions.$policy.dropFirst().sink { [weak self] in self?.distractionMonitor.update(policy: $0) }.store(in: &focusListeners)
+        distractions.$policy.dropFirst().sink { [weak self] policy in
+            self?.distractionMonitor.update(policy: policy)
+            self?.screenshotMonitor?.update(policy: policy)
+        }.store(in: &focusListeners)
         focusEvents.sink { [weak self] event in
             guard let self else { return }
             switch event {
@@ -159,11 +277,16 @@ final class AppModel: ObservableObject {
         focusEvents.sink { [weak self] event in self?.notifications.receive(event) }.store(in: &focusListeners)
         NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in Task { await self?.refreshFocus() } }.store(in: &focusListeners)
+            .sink { [weak self] _ in self?.refreshClocks() }.store(in: &focusListeners)
         NotificationCenter.default.publisher(for: NSNotification.Name.NSSystemClockDidChange)
             .merge(with: NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in Task { await self?.refreshFocus() } }.store(in: &focusListeners)
+            .sink { [weak self] _ in self?.refreshClocks() }.store(in: &focusListeners)
+    }
+
+    private func refreshClocks() {
+        advancePomodoro(at: Date())
+        Task { [weak self] in await self?.refreshFocus() }
     }
 
     var tokenFileURL: URL? { tokenStore.fileURL }
@@ -189,12 +312,13 @@ final class AppModel: ObservableObject {
     func isPending(_ task: TodoTask) -> Bool { connected && pendingIDs.contains(task.id) }
     func isRemote(_ task: TodoTask) -> Bool { task.remote != nil }
 
-    func start() async {
+    func start(requestPermissions: Bool = true) async {
         guard !started, ready else { return }
         started = true
         lifecycleReady = true
         await refresh()
-        permissionSetup = Task { [weak self] in await self?.permissions.start() }
+        if requestPermissions { startInteractivePermissions() }
+        else { await permissions.refresh() }
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 let clock = ContinuousClock()
@@ -204,6 +328,11 @@ final class AppModel: ObservableObject {
                 catch { break }
             }
         }
+    }
+
+    func startInteractivePermissions() {
+        guard permissionSetup == nil else { return }
+        permissionSetup = Task { [weak self] in await self?.permissions.start() }
     }
 
     func add(title: String, description: String, dueAt: Date?, duration: TimeInterval?, completion: @escaping (Bool) -> Void) {
@@ -393,7 +522,8 @@ final class AppModel: ObservableObject {
 
     private func apply(_ update: TaskFocusUpdate) {
         userFocus = update.user
-        distractionMonitor.update(activeTask: update.activeTask)
+        monitoringTask = update.activeTask
+        updateMonitoring()
         for event in update.events { focusEvents.send(event) }
         scheduleFocusEvaluation(at: update.nextTransitionAt)
     }
