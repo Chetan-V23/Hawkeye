@@ -35,7 +35,7 @@ struct ContentView: View {
             HStack(spacing: 10) {
                 Image(systemName: "eye").font(.system(size: 25, weight: .medium)).foregroundStyle(Palette.green)
                 Text("hawkeye").font(.system(size: 24, weight: .semibold, design: .rounded)).tracking(-1)
-                Text("02").font(.system(size: 9, weight: .medium, design: .monospaced))
+                Text("v0.2").font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundStyle(Palette.green).padding(5)
                     .background(Palette.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
             }.padding(.bottom, 46)

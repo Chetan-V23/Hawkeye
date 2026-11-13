@@ -13,7 +13,7 @@ __pycache__/
 .venv-browser-collector/
 browser_text_samples/
 Desktop/
-docs/
 .github/
 .vscode/
-
+docs/
+scripts/

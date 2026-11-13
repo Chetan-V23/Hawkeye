@@ -31,12 +31,14 @@ struct FocusPane: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack {
                 Spacer()
+                #if DEBUG
                 Button { showActivityLog() } label: {
                     Image(systemName: "waveform.path.ecg").font(.system(size: 14))
                         .frame(width: 30, height: 30)
                         .background(Palette.card, in: RoundedRectangle(cornerRadius: 8))
                 }.buttonStyle(.plain).foregroundStyle(Palette.muted)
                     .help("Open activity log").accessibilityLabel("Open activity log")
+                #endif
                 Button { model.showFocusConfiguration = true } label: {
                     Image(systemName: "gearshape").font(.system(size: 14))
                         .frame(width: 30, height: 30)
