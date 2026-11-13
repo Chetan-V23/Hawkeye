@@ -1,6 +1,6 @@
 # Hawkeye 2
 
-A small native macOS task app with TickTick sync. Requires macOS 14 or later and Swift 6. The interface follows Hawkeye's forest palette, serif headings, and 2:4:1 layout.
+A small native macOS task app with TickTick, Todoist, or Notion sync. Requires macOS 14 or later and Swift 6. The interface follows Hawkeye's forest palette, serif headings, and 2:4:1 layout.
 
 The Windows port is in `Desktop`. Copy `dist/Hawkeye-Windows-x64.exe` to a Windows 10 or Windows 11 laptop and run it. The executable includes the .NET runtime and browser setup files. Chrome and Edge have native Windows browser access without an extension. See [Windows setup](docs/WINDOWS.md), [portable architecture](docs/PORT_DESIGN.md), and [verification results](docs/PORT_VERIFICATION.md). Screenshots and macOS data import are excluded. The same portable projects include Linux adapters.
 
@@ -20,23 +20,25 @@ Run `zsh scripts/verify-signing.sh` to check that different executable builds sa
 
 Run `zsh scripts/build-app.sh --development`, then open `dist/Hawkeye 2 Dev.app`. To run from source, use `swift run Hawkeye2` or the VS Code **Debug Hawkeye2 (file PAT)** configuration. All debug launches use the same development credential file and preferences.
 
-Connect through TickTick settings once. The developer app saves the PAT as plain text at `~/Library/Application Support/Hawkeye2/Development/ticktick-pat.txt`, with file permissions `0600`. You can also paste the PAT directly into that file and relaunch. Leave out quotes or variable assignments. The file lives outside the repository and is not included in the app bundle. Disconnect deletes this file.
+Connect through third-party app settings once. Developer builds save the selected app's PAT as plain text in `~/Library/Application Support/Hawkeye2/Development`, with file permissions `0600`. Each provider has its own token file. The existing TickTick path remains `ticktick-pat.txt`. These files live outside the repository and are not included in the app bundle. Release builds use provider-specific Keychain entries.
 
 Development tasks live at `~/Library/Application Support/Hawkeye2/Development/tasks.json`. Production tasks remain at `~/Library/Application Support/Hawkeye2/tasks.json`. Both builds can sync to the same TickTick account, but have separate local stores and destination preferences. `--data-directory` verification sessions still skip all credentials and cannot save a connection.
 
 Run `zsh scripts/build-app.sh` for the release app. The VS Code **Release Hawkeye2 (Keychain)** configuration also uses Keychain. To remove the old Hawkeye PAT entry, quit the release app and run `security delete-generic-password -s com.hawkeye2.mac.ticktick -a personal-access-token`. This removes that credential without deleting any other Keychain items or task data.
 
-## Connect TickTick
+## Connect a task app
 
-1. Create a personal token in TickTick's web app under **Settings → Account → API Token**.
-2. Open Hawkeye's TickTick settings using the sliders button at the bottom of the middle pane, or press Command-comma.
+1. Create a personal token for your chosen app. TickTick exposes **Settings → Account → API Token**. Todoist exposes its API token in **Settings → Integrations → Developer**. For Notion, open [Personal access tokens](https://www.notion.so/developers/tokens) and enable the **Notion API** capability.
+2. Open Hawkeye's third-party app settings using the sliders button at the bottom of the middle pane, or press Command-comma. Choose **TickTick**, **Todoist**, or **Notion**.
 3. Paste the token and click **Check token**.
-4. Choose the TickTick list that receives new tasks.
-5. Click **Connect & sync**. Existing local tasks also upload to that list.
+4. Choose the list, project, or Notion database that receives tasks. For Notion, map the title, completion, and date properties. If the completion field uses named statuses, choose the open and completed values.
+5. Click **Connect and sync**. Only one app can be connected at a time.
 
-Once connected, settings fetches your lists again each time it opens, using the saved token and bypassing the local HTTP cache. The refresh button also fetches the lists while settings stays open. Choose another list and click **Save destination** to change where new tasks go. Tasks already synced stay in their existing lists. The token field stays hidden until you click **Change token**. Canceling token replacement keeps the saved connection.
+Settings fetches destinations using the saved token each time it opens. The refresh button fetches them again. Changing the destination within the same app applies to new tasks. The token field stays hidden until you click **Change token**.
 
-The release app stores the token in macOS Keychain. Developer builds use the development token file described above. Hawkeye polls TickTick every 60 seconds while running and syncs after local changes. Manual sync is available through the footer button or Command-Shift-R. Closing the final window keeps Hawkeye running in the background.
+Changing the selected app is a draft until you save a validated connection. When you switch, Hawkeye retains every task saved in `tasks.json`, including imported tasks and completed tasks. It removes the previous connection's remote identities, pending bindings, and sync history. Retained tasks can sync to the new destination. No tasks are deleted from the previous app.
+
+Hawkeye polls the selected app every 60 seconds while running and syncs after local changes. Manual sync is available through the footer button or Command-Shift-R. Closing the final window keeps Hawkeye running in the background.
 
 ## Start at login and run in the background
 
@@ -46,7 +48,7 @@ Click the eye in the menu bar and choose **Open Hawkeye** to reopen the window. 
 
 Choose **Quit Hawkeye** from the menu or press Command-Q to stop the app until you open it again or next log in. The developer app supports the same controls but requires you to enable launch at login explicitly. Bare `swift run` processes and isolated `--data-directory` sessions cannot register login items. Add `--background` when launching an isolated session to check startup without opening a window.
 
-Use one TickTick account with this task store. Disconnect keeps your local tasks and pending changes. Reconnect to the same account to resume sync. To use another account, keep a separate data directory.
+Disconnect keeps your saved tasks. Switching apps clears the previous connection data before connecting the new provider. Use a separate data directory for separate task collections.
 
 ## Use tasks
 
@@ -130,10 +132,14 @@ To check the packaged app, run `zsh scripts/prepare-ui-check.sh` after building.
 
 `ScreenshotMonitor` schedules task screenshots through an injected `ScreenshotCapturing` source. Each display has an independent analysis and runs the same ordered processor list. Pass that list through `AppModel(screenshotProcessors:)` to compose future OCR and LLM steps; include `BlacklistedApplicationProcessor()` to retain the default screenshot blacklist checks. Steps can share typed results within one display's analysis without mixing results from other displays. An inferred browser distraction must identify one exact tab and its captured window before it can request a close. It must never become a request to quit the browser. Native actions revalidate the window, process, and tab before acting. `ActivityLog` owns thumbnail files and retention. Screenshot capture does not change the foreground detector contract. `ScriptableBrowser` owns the browser capability registry. Add a new browser only after checking its scripting dictionary and tab identity guarantees. `Theme.swift` defines the palette. No AI monitoring or inference runs in this version.
 
-The [TickTick Open API reference](https://developer.ticktick.com/docs/index.html#/openapi) describes the remote interface. Live sync requires a token and a reachable TickTick service.
+The adapters follow the [TickTick Open API reference](https://developer.ticktick.com/docs/index.html#/openapi), [Todoist API v1 reference](https://developer.todoist.com/api/v1/), and [Notion data-source API](https://developers.notion.com/reference/query-a-data-source). Notion requests pin API version `2026-03-11`. Live sync requires a token and a reachable provider.
 
-The app imports your lists and Inbox. Initial sync requests the last 30 days of completed tasks, then subsequent syncs request newer completions. TickTick caps Inbox and completed queries at 200 results. Hawkeye displays a warning when it reaches a cap. It retains local completion history and checks known remote tasks individually for changes. Creation time falls back to the first import time when TickTick omits it. TickTick start and end dates supply an imported duration. A local duration overrides that duration. User snooze stays local.
+TickTick imports your lists and Inbox. Initial sync requests the last 30 days of completed tasks, then subsequent syncs request newer completions. TickTick caps Inbox and completed queries at 200 results. Hawkeye displays a warning when it reaches a cap. It retains local completion history and checks known remote tasks individually for changes. Creation time falls back to the first import time when TickTick omits it. TickTick start and end dates supply an imported duration. A local duration overrides that duration. User snooze stays local.
 
 Sync retries use the same remote task ID after a failed create. The mock server verifies recovery when the server accepts that ID. Real-account acceptance of client-supplied IDs still needs validation. See [the core design](DESIGN.md) for these API limits and conflict rules.
 
 Pending local edits take precedence over remote changes to that task until uploaded. Hawkeye preserves TickTick's additional task metadata, such as checklist items and recurrence.
+
+Todoist uses cursor pagination for projects and tasks. New tasks use the Sync API's documented command UUID to make retries safe. Notion reads tasks from the selected database's data source and updates only the mapped properties. Descriptions can use an optional rich-text property. Without that mapping, descriptions stay local and existing page content remains untouched.
+
+Notion does not document an idempotency key for creating pages. If creation has an uncertain outcome, Hawkeye keeps the task and pauses its automatic creation. Check the database before using the recovery action to attach the existing page or retry. This prevents polling or restarting from repeatedly creating the same task.

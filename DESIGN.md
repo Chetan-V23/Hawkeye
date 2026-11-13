@@ -2,7 +2,7 @@
 
 The Windows and Linux architecture is described in [the portable desktop design](docs/PORT_DESIGN.md). The Swift design below remains the macOS implementation and the behavior reference for the port.
 
-The domain is a `TodoTask`, a durable `TaskState`, and one pending write per task. Completion is derived from `completedAt`. `dueAt` stores the scheduled start in Hawkeye. A local duration override does not enqueue remote writes. Remote identity includes the project and a task ID allocated once before the first create request.
+The domain is a `TodoTask`, a durable `TaskState`, and one pending write per task. Completion is derived from `completedAt`. `dueAt` stores the scheduled start in Hawkeye. A local duration override does not enqueue remote writes. Remote identity includes the provider, destination, and task ID. Old identities without a provider decode as TickTick.
 
 Two ownership options were considered.
 
@@ -11,9 +11,17 @@ Two ownership options were considered.
 
 `TaskState` contains pure mutations and merge rules. `TaskService` persists a new state before adopting it. JSON writes are atomic and versioned. An unsupported schema or corrupt file fails visibly rather than resetting the task list. No authentication credential appears in task persistence.
 
-All local tasks have a durable create intent. They upload automatically once a client and destination project are configured. A client without a destination downloads tasks but leaves local creates queued. Existing remote edits retain their original project.
+All local tasks have a durable create intent. They upload automatically once a provider and destination are configured. A provider without a destination downloads tasks but leaves local creates queued. Existing remote edits retain their original destination.
 
-Sync sends the queued writes first, then reads every task project. A second sync invocation returns a skipped report while the first is running. A create writes its stable remote ID to disk before contacting TickTick and checks that exact ID before retrying. Creation confirmation is saved before completion is requested. Edits arriving during any request retain their newer pending operation. Missing records are fetched individually for their actual status. A missing or inaccessible remote record is retained locally.
+`TaskSyncProvider` separates provider APIs from the common sync engine. Adapters translate wire data into `RemoteTaskSnapshot` values and own creation, completion, and pull coverage. `TaskService` owns durable acknowledgment and configuration generation checks. A provider-owned sync engine was considered, but it would repeat persistence and retry rules for every app. Future providers implement this interface and supply destination discovery without changing memory or focus behavior.
+
+Exactly one connection is active. Settings edits a draft provider, credential, destination, and optional Notion mapping. Saving a different provider removes the old remote identities, creation bindings, and history cursor in one persisted task-state mutation. All saved task fields and local IDs remain. Imported duration becomes a local duration when no local override exists. Retained tasks receive fresh create intents for the selected provider. Switching does not delete remote tasks. Generation checks reject downloads and acknowledgments belonging to an earlier connection.
+
+TickTick uses its existing provisional ID and read-before-create recovery. Todoist creates through Sync API commands with a durable command UUID and temporary ID. A creation payload stays frozen while the outcome is unresolved, so edits cannot turn a retry into a different create. Once creation is confirmed, its remote identity is saved before later updates or completion. Notion creates have no documented idempotency key, so uncertain attempts remain paused across polls and restarts until the user attaches an existing page or explicitly retries.
+
+Notion maps an existing data source's stable property IDs. The title field must be `title`, the date field must be `date`, and completion can use `status`, `select`, or `checkbox`. Named completion fields require distinct open and completed values. An optional `rich_text` property carries descriptions. Without it, remote snapshots leave local descriptions intact. The adapter does not rewrite page bodies or unmapped properties.
+
+Sync sends the queued writes first, then reads remote tasks. A second sync invocation returns a skipped report while the first is running. TickTick creation writes its provisional remote ID to disk before the request and checks that exact ID before retrying. Creation confirmation is saved before completion is requested. Edits arriving during any request retain their newer pending operation. Missing records are fetched individually when the provider supports it. A missing or inaccessible remote record is retained locally.
 
 The explicit create ID is sent to TickTick's Open API. Its acceptance is covered by a deterministic server fixture, not a real account test. The documented API does not promise a general idempotency key. The application must surface a failed create instead of generating a new remote ID on retry.
 
@@ -21,7 +29,7 @@ The `TaskServicing` protocol is the application boundary for future automation o
 
 The editor update command changes only title, description, scheduled start, and duration on the latest stored task. Completion and user pause have separate commands, so saving an older editor cannot undo either action.
 
-The client paginates the official project endpoint and imports Inbox tasks through `POST /task/filter`. It requests the last 30 days of completed tasks on first sync through `POST /task/completed`. Subsequent history queries begin 60 seconds before the previous successful history cursor. Failed history requests keep the cursor for retry. Inbox and history endpoints cap results at 200; reaching a cap produces a visible warning. Known tasks missing from these results are still checked individually. A failed list produces a warning while other lists continue importing. A 401 aborts the sync. No private endpoints or guessed completion states are used.
+The TickTick client paginates the official project endpoint and imports Inbox tasks through `POST /task/filter`. It requests the last 30 days of completed tasks on first sync through `POST /task/completed`. Subsequent history queries begin 60 seconds before the previous successful history cursor. Failed history requests keep the cursor for retry. Inbox and history endpoints cap results at 200; reaching a cap produces a visible warning. Known tasks missing from these results are still checked individually. A failed list produces a warning while other lists continue importing. A 401 aborts the sync. No private endpoints or guessed completion states are used.
 
 `TaskFocusController` is a pure state machine owned by `TaskService`. `evaluateFocus(at:)` selects one unfinished task inside its half-open scheduled interval. Priority is start, creation time, then UUID. The controller emits typed activation and deactivation events only on transitions. Its staged state and `UserFocusState` are adopted only after any required disk write succeeds.
 

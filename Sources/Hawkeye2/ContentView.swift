@@ -152,7 +152,7 @@ struct ContentView: View {
             HStack(spacing: 9) {
                 Circle().fill(model.connected ? Palette.green : Palette.muted).frame(width: 5, height: 5)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(model.connected ? "TickTick connected" : "Tasks saved on this Mac")
+                    Text(model.connected ? "Third Party App connected" : "Tasks saved on this Mac")
                         .font(.system(size: 11, weight: .medium))
                     Text(model.syncStatus).font(.system(size: 10)).foregroundStyle(Palette.muted)
                         .lineLimit(2).help(model.syncStatus)
@@ -166,8 +166,8 @@ struct ContentView: View {
                 }
                 Button { model.showSettings = true } label: {
                     Image(systemName: "slider.horizontal.3")
-                }.buttonStyle(.plain).foregroundStyle(Palette.muted).help("TickTick settings")
-                    .accessibilityLabel("TickTick settings")
+                }.buttonStyle(.plain).foregroundStyle(Palette.muted).help("Third Party App settings")
+                    .accessibilityLabel("Third Party App settings")
             }.padding(.top, 17)
         }.padding(.horizontal, 36).padding(.top, 39).padding(.bottom, 24)
     }
@@ -257,7 +257,7 @@ struct TaskRow: View {
         if !active {
             Button("Start now") { model.startNow(task) }
                 .disabled(model.activeTaskID != nil)
-                .help(model.activeTaskID != nil ? "Another task is active." : "Start this task now and sync its new start time to TickTick.")
+                .help(model.activeTaskID != nil ? "Another task is active." : "Start this task now and sync its new start time to the connected app.")
             if model.activeTaskID != nil {
                 Text("Another task is active").font(.caption)
             }
@@ -318,7 +318,7 @@ struct TaskRow: View {
                         Text(model.userFocus.snooze != nil ? "Paused" : "Waiting").foregroundStyle(Palette.muted)
                     }
                     if model.isPending(task) { syncLabel("Pending", pending: true) }
-                    else if model.isRemote(task) { syncLabel("TickTick") }
+                    else if model.isRemote(task) { syncLabel(model.providerName) }
                 }.font(.system(size: 10))
             }.frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())

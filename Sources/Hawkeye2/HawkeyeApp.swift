@@ -16,7 +16,7 @@ struct HawkeyeApp: App {
                 Button("Close Window") { NSApplication.shared.keyWindow?.performClose(nil) }.keyboardShortcut("w")
             }
             CommandGroup(replacing: .appSettings) {
-                Button("TickTick settings…") { delegate.showSettings() }.keyboardShortcut(",")
+                Button("Third Party App settings…") { delegate.showSettings() }.keyboardShortcut(",")
                 Button("Focus permissions…") {
                     delegate.showMainWindow()
                     delegate.model.permissions.showSheet = true

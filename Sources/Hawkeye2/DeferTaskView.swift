@@ -14,7 +14,7 @@ struct DeferTaskView: View {
             Text("Reschedule task").font(.system(size: 30, design: .serif))
             Text(task.title).font(.system(size: 14, weight: .medium)).lineLimit(3)
             TaskScheduleButton(date: $start).accessibilityLabel("New task start time")
-            Text("Duration: \(Int(task.effectiveDuration / 60)) minutes. The new start time syncs to TickTick.")
+            Text("Duration: \(Int(task.effectiveDuration / 60)) minutes. The new start time syncs to the connected app.")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted)
             if start <= now {
                 Text("Choose a start time in the future.").font(.system(size: 12)).foregroundStyle(Palette.orange)

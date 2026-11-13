@@ -4,11 +4,6 @@ import HawkeyeCore
 import Combine
 import AppKit
 
-struct ProjectOption: Identifiable {
-    let id: String
-    let name: String
-}
-
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var tasks: [TodoTask] = []
@@ -18,7 +13,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var ready = false
     @Published private(set) var projectName = "your selected list"
     @Published private(set) var projectID = ""
-    @Published private(set) var syncStatus = "Connect TickTick in settings."
+    @Published private(set) var syncStatus = "Connect a Third Party App in settings."
+    @Published private(set) var connection: TaskConnection?
+    @Published private(set) var uncertainNotionTasks: [TodoTask] = []
     @Published var error: String?
     @Published var now = Date()
     @Published var showSettings = false
@@ -37,6 +34,10 @@ final class AppModel: ObservableObject {
     private let pomodoroSettingsURL: URL?
     private let tokenStore: TokenStore
     private var tickTickClient: TickTickClient?
+    private var syncProvider: (any TaskSyncProvider)?
+    private let transport: any HTTPTransport
+    private var syncTask: Task<Void, Never>?
+    private var changingConnection = false
     private var pendingIDs = Set<UUID>()
     private var polling: Task<Void, Never>?
     private var connectionGeneration = 0
@@ -54,6 +55,7 @@ final class AppModel: ObservableObject {
 
     init(screenshotProcessors: [any ScreenshotProcessing] = ScreenshotPipeline.defaultProcessors) {
         tokenStore = .defaultStore
+        transport = URLSessionTransport()
         #if DEBUG
         preferences = UserDefaults(suiteName: "com.hawkeye2.mac.development") ?? .standard
         #else
@@ -92,19 +94,22 @@ final class AppModel: ObservableObject {
             defaultStoreURL = try JSONTaskStore.defaultURL()
             #endif
             let storeURL = directory.map { URL(fileURLWithPath: $0).appendingPathComponent("tasks.json") } ?? defaultStoreURL
+            let saved = isolated ? nil : TaskConnection.load(from: preferences)
             var token: String?
             var credentialError: String?
-            if !isolated {
-                do { token = try tokenStore.read() }
+            if let saved {
+                do { token = try tokenStore.scoped(to: saved.provider).read() }
                 catch { credentialError = error.localizedDescription }
             }
-            let projectID = isolated ? nil : preferences.string(forKey: "ticktick.projectID")
-            let client = token.map { TickTickClient(token: $0) }
-            service = try TaskService(store: JSONTaskStore(url: storeURL), client: client, projectID: projectID)
-            tickTickClient = client
-            connected = token != nil
-            self.projectID = projectID ?? ""
-            projectName = isolated ? "your selected list" : preferences.string(forKey: "ticktick.projectName") ?? "your selected list"
+            let provider: (any TaskSyncProvider)?
+            if let token, let saved { provider = try Self.provider(for: saved, token: token, transport: transport) }
+            else { provider = nil }
+            service = try TaskService(store: JSONTaskStore(url: storeURL), provider: provider, destinationID: saved?.destinationID)
+            syncProvider = provider
+            connection = saved
+            connected = provider != nil
+            self.projectID = saved?.destinationID ?? ""
+            projectName = saved?.destinationName ?? "your selected destination"
             ready = true
             if let credentialError { syncStatus = "Tasks are available locally. \(credentialError)" }
         } catch {
@@ -125,10 +130,14 @@ final class AppModel: ObservableObject {
          screenshotProcessors: [any ScreenshotProcessing] = ScreenshotPipeline.defaultProcessors,
          screenshotActions: (any ScreenshotActions)? = nil,
          browserContentCapturer: (any BrowserContentCapturing)? = nil,
-         browserContentInterval: Duration = .seconds(60)) {
+         browserContentInterval: Duration = .seconds(60),
+         transport: any HTTPTransport = URLSessionTransport()) {
         self.service = service
         self.tokenStore = tokenStore
+        self.transport = transport
         tickTickClient = client
+        syncProvider = TickTickTaskProvider(client: client)
+        connection = TaskConnection(provider: .ticktick, destinationID: project.id, destinationName: project.name, notionMapping: nil)
         self.preferences = preferences
         pomodoroSettingsURL = nil
         isolated = false
@@ -158,7 +167,7 @@ final class AppModel: ObservableObject {
         installFocusListeners()
     }
 
-    deinit { polling?.cancel(); focusTimer?.cancel(); pomodoroTick?.cancel(); permissionSetup?.cancel() }
+    deinit { syncTask?.cancel(); polling?.cancel(); focusTimer?.cancel(); pomodoroTick?.cancel(); permissionSetup?.cancel() }
 
     var activeTask: TodoTask? { tasks.first { $0.id == activeTaskID } }
     var isMonitoringActive: Bool { monitoringSession?.isActive(at: now) == true }
@@ -289,7 +298,10 @@ final class AppModel: ObservableObject {
         Task { [weak self] in await self?.refreshFocus() }
     }
 
-    var tokenFileURL: URL? { tokenStore.fileURL }
+    var providerID: TaskProviderID { connection?.provider ?? .ticktick }
+    var providerName: String { providerID.displayName }
+    var tokenFileURL: URL? { tokenStore.scoped(to: providerID).fileURL }
+    func tokenFileURL(for provider: TaskProviderID) -> URL? { tokenStore.scoped(to: provider).fileURL }
     var tokenStorageDescription: String {
         tokenFileURL == nil ? "Personal access token saved in Keychain" : "Personal access token saved in development file"
     }
@@ -323,7 +335,8 @@ final class AppModel: ObservableObject {
             while !Task.isCancelled {
                 let clock = ContinuousClock()
                 let nextPoll = clock.now.advanced(by: .seconds(60))
-                await self?.synchronize()
+                self?.syncNow()
+                await self?.syncTask?.value
                 do { try await clock.sleep(until: nextPoll) }
                 catch { break }
             }
@@ -385,97 +398,208 @@ final class AppModel: ObservableObject {
         }, activity: "Started now \(task.title).", completion: completion)
     }
 
+    private static func provider(for connection: TaskConnection, token: String,
+                                 transport: any HTTPTransport) throws -> any TaskSyncProvider {
+        switch connection.provider {
+        case .ticktick: return TickTickTaskProvider(client: TickTickClient(token: token, transport: transport))
+        case .todoist: return TodoistTaskProvider(client: TodoistClient(token: token, transport: transport))
+        case .notion:
+            guard let mapping = connection.notionMapping else { throw TaskProviderError.invalidMapping }
+            return NotionTaskProvider(client: NotionClient(token: token, transport: transport), mapping: mapping)
+        }
+    }
+
     func checkToken(_ rawToken: String) async throws -> [ProjectOption] {
-        let client = TickTickClient(token: rawToken.trimmingCharacters(in: .whitespacesAndNewlines))
-        return try await projects(using: client)
+        try await discover(provider: .ticktick, token: rawToken).destinations
     }
 
     func availableProjects() async throws -> [ProjectOption] {
-        guard let client = tickTickClient else { throw AppFailure.notConnected }
-        return try await projects(using: client)
+        if let client = tickTickClient {
+            return try await client.projects().filter { $0.closed != true && $0.kind != "NOTE" && $0.permission != "read" }
+                .map { TaskDestination(id: $0.id, name: $0.name) }
+        }
+        return try await discover(provider: providerID).destinations
     }
 
-    private func projects(using client: TickTickClient) async throws -> [ProjectOption] {
-        return try await client.projects()
-            .filter { $0.closed != true && $0.kind != "NOTE" && $0.permission != "read" }
-            .map { ProjectOption(id: $0.id, name: $0.name) }
+    func discover(provider: TaskProviderID, token rawToken: String? = nil) async throws -> ConnectionCatalog {
+        let token = try rawToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? (provider == providerID && connected ? tokenStore.scoped(to: provider).read() : nil)
+        if rawToken == nil, provider == .ticktick, let client = tickTickClient {
+            return ConnectionCatalog(destinations: try await client.projects()
+                .filter { $0.closed != true && $0.kind != "NOTE" && $0.permission != "read" }
+                .map { TaskDestination(id: $0.id, name: $0.name) })
+        }
+        guard let token, !token.isEmpty else { throw AppFailure.emptyToken }
+        switch provider {
+        case .ticktick:
+            let projects = try await TickTickClient(token: token, transport: transport).projects()
+            return ConnectionCatalog(destinations: projects.filter { $0.closed != true && $0.kind != "NOTE" && $0.permission != "read" }
+                .map { TaskDestination(id: $0.id, name: $0.name) })
+        case .todoist:
+            return ConnectionCatalog(destinations: try await TodoistClient(token: token, transport: transport).projects())
+        case .notion:
+            let sources = try await NotionClient(token: token, transport: transport).dataSources()
+            return ConnectionCatalog(destinations: sources.map { TaskDestination(id: $0.id, name: $0.name) }, notionDataSources: sources)
+        }
     }
 
     func changeDestination(to project: ProjectOption) async throws {
-        guard let service else { throw AppFailure.storageUnavailable }
-        guard let client = tickTickClient else { throw AppFailure.notConnected }
-        connectionGeneration += 1
-        await service.configureSync(client: client, projectID: project.id)
-        saveDestination(project)
+        guard !changingConnection else { throw AppFailure.connectionBusy }
+        guard let service, let syncProvider, var saved = connection else { throw AppFailure.notConnected }
+        changingConnection = true
+        defer { changingConnection = false }
+        saved = TaskConnection(provider: saved.provider, destinationID: project.id, destinationName: project.name,
+                               notionMapping: saved.notionMapping)
+        invalidateSync()
+        await service.configureSync(provider: syncProvider, destinationID: project.id)
+        saveConnection(saved)
     }
 
-    private func saveDestination(_ project: ProjectOption) {
-        preferences.set(project.id, forKey: "ticktick.projectID")
-        preferences.set(project.name, forKey: "ticktick.projectName")
-        projectID = project.id
-        projectName = project.name
-        activity.record("TickTick", "Default destination changed to \(project.name).")
+    private func saveConnection(_ value: TaskConnection) {
+        value.save(to: preferences)
+        connection = value
+        projectID = value.destinationID
+        projectName = value.destinationName
+        activity.record("Third Party App", "Connected to \(value.provider.displayName), destination \(value.destinationName).")
     }
 
     func connect(token: String, project: ProjectOption) async throws {
+        try await connect(provider: .ticktick, token: token, destination: project)
+    }
+
+    func connect(provider: TaskProviderID, token rawToken: String?, destination: TaskDestination,
+                 notionMapping: NotionTaskMapping? = nil) async throws {
         guard let service else { throw AppFailure.storageUnavailable }
         guard !isolated else { throw AppFailure.isolatedSession }
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw AppFailure.emptyToken }
-        try tokenStore.save(trimmed)
-        let client = TickTickClient(token: trimmed)
-        connectionGeneration += 1
-        await service.configureSync(client: client, projectID: project.id)
-        tickTickClient = client
-        saveDestination(project)
+        guard !changingConnection else { throw AppFailure.connectionBusy }
+        changingConnection = true
+        defer { changingConnection = false }
+        let nextStore = tokenStore.scoped(to: provider)
+        let previousNextToken = try nextStore.read()
+        let trimmed = rawToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? previousNextToken
+        guard let trimmed, !trimmed.isEmpty else { throw AppFailure.emptyToken }
+        let catalog = try await discover(provider: provider, token: trimmed)
+        guard catalog.destinations.contains(where: { $0.id == destination.id }) else { throw AppFailure.invalidDestination }
+        if provider == .notion {
+            guard let source = catalog.notionDataSources.first(where: { $0.id == destination.id }), let notionMapping else {
+                throw TaskProviderError.invalidMapping
+            }
+            try notionMapping.validate(in: source)
+        }
+        let next = TaskConnection(provider: provider, destinationID: destination.id, destinationName: destination.name,
+                                  notionMapping: notionMapping)
+        let nextProvider = try Self.provider(for: next, token: trimmed, transport: transport)
+        let previous = connection
+        let previousProvider = syncProvider
+        let previousStore = tokenStore.scoped(to: providerID)
+        let previousToken = try previousStore.read()
+        let detach = previous != nil && (previous?.provider != provider
+            || (provider == .notion && previous?.destinationID != next.destinationID))
+        try nextStore.save(trimmed)
+        do {
+            if previous?.provider != provider { try previousStore.remove() }
+            invalidateSync()
+            if detach { try await service.discardConnectionData() }
+        } catch {
+            if let previousNextToken { try? nextStore.save(previousNextToken) } else { try? nextStore.remove() }
+            if let previousToken { try? previousStore.save(previousToken) }
+            await service.configureSync(provider: previousProvider, destinationID: previous?.destinationID)
+            throw error
+        }
+        await service.configureSync(provider: nextProvider, destinationID: destination.id)
+        syncProvider = nextProvider
+        tickTickClient = nil
+        saveConnection(next)
         connected = true
-        activity.record("TickTick", "Connected to TickTick.")
-        syncStatus = "Connected. Preparing your tasks…"
+        syncStatus = "Connected to \(provider.displayName). Preparing your tasks…"
+        await refresh()
         syncNow()
     }
 
     func disconnect() async throws {
-        try tokenStore.remove()
-        connectionGeneration += 1
-        await service?.configureSync(client: nil, projectID: nil)
+        guard !changingConnection else { throw AppFailure.connectionBusy }
+        changingConnection = true
+        defer { changingConnection = false }
+        let store = tokenStore.scoped(to: providerID)
+        let previousToken = try store.read()
+        try store.remove()
+        invalidateSync()
+        do { try await service?.discardConnectionData() }
+        catch {
+            if let previousToken { try? store.save(previousToken) }
+            await service?.configureSync(provider: syncProvider, destinationID: connection?.destinationID)
+            throw error
+        }
+        await service?.configureSync(provider: nil, destinationID: nil)
         tickTickClient = nil
+        syncProvider = nil
         connected = false
-        activity.record("TickTick", "Disconnected from TickTick.")
+        connection = nil
+        activity.record("Third Party App", "Disconnected. Saved tasks retained locally.")
+        preferences.removeObject(forKey: TaskConnection.preferenceKey)
         preferences.removeObject(forKey: "ticktick.projectID")
         preferences.removeObject(forKey: "ticktick.projectName")
         projectID = ""
-        projectName = "your selected list"
+        projectName = "your selected destination"
         syncStatus = "Disconnected. Your tasks are still saved locally."
         await refresh()
     }
 
-    func syncNow() { Task { await synchronize() } }
+    private func invalidateSync() {
+        connectionGeneration += 1
+        syncTask?.cancel()
+        syncTask = nil
+        syncing = false
+    }
+
+    @discardableResult
+    func syncNow() -> Task<Void, Never>? {
+        guard syncTask == nil else { return syncTask }
+        let generation = connectionGeneration
+        syncTask = Task { [weak self] in
+            await self?.synchronize()
+            if self?.connectionGeneration == generation { self?.syncTask = nil }
+        }
+        return syncTask
+    }
 
     private func synchronize() async {
-        guard connected, !syncing, let service else { return }
+        guard connected, !syncing, !changingConnection, let service else { return }
         let generation = connectionGeneration
+        let name = providerName
         syncing = true
-        syncStatus = "Syncing with TickTick…"
-        activity.record("Sync", "TickTick sync started.")
-        defer { syncing = false }
+        syncStatus = "Syncing with \(name)…"
+        activity.record("Sync", "\(name) sync started.")
+        defer { if generation == connectionGeneration { syncing = false } }
         do {
             let report = try await service.sync()
-            guard generation == connectionGeneration else { return }
-            await refresh()
-            guard !report.skipped else { return }
-            activity.record("Sync", "TickTick sync finished. Pushed \(report.pushed), pulled \(report.pulled).")
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
+            await refresh(expectedConnectionGeneration: generation)
+            guard generation == connectionGeneration, !report.skipped else { return }
+            activity.record("Sync", "\(name) sync finished. Pushed \(report.pushed), pulled \(report.pulled).")
             for warning in report.warnings { activity.record("Sync warning", warning) }
-            if !report.warnings.isEmpty {
-                syncStatus = report.warnings.joined(separator: " ")
-            } else {
-                syncStatus = "Synced \(report.finishedAt.formatted(date: .omitted, time: .shortened)) · Every minute"
-            }
+            syncStatus = report.warnings.isEmpty
+                ? "Synced \(report.finishedAt.formatted(date: .omitted, time: .shortened)) · Every minute"
+                : report.warnings.joined(separator: " ")
         } catch {
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
+            await refresh(expectedConnectionGeneration: generation)
             guard generation == connectionGeneration else { return }
-            await refresh()
             syncStatus = "Sync paused · \(error.localizedDescription) Retrying next minute."
             activity.record("Sync error", error.localizedDescription)
         }
+    }
+
+    func retryNotionCreation(_ taskID: UUID) async throws {
+        try await service?.retryUncertainCreation(taskID: taskID)
+        await refresh()
+        syncNow()
+    }
+
+    func attachNotionCreation(_ taskID: UUID, pageID: String) async throws {
+        try await service?.attachUncertainCreation(taskID: taskID, pageID: pageID)
+        await refresh()
+        syncNow()
     }
 
     private func mutate(_ operation: @escaping (TaskService) async throws -> Void,
@@ -500,10 +624,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func refresh() async {
+    private func refresh(expectedConnectionGeneration: Int? = nil) async {
         guard let service else { return }
         let state = await service.snapshot()
+        let uncertainTasks = await service.uncertainNotionCreations()
+        if let expectedConnectionGeneration, expectedConnectionGeneration != connectionGeneration { return }
         tasks = state.tasks
+        uncertainNotionTasks = uncertainTasks
         pendingIDs = Set(state.tasks.filter { state.isPending($0.id) }.map(\.id))
         now = Date()
         await refreshFocus()
@@ -541,13 +668,15 @@ final class AppModel: ObservableObject {
 }
 
 private enum AppFailure: LocalizedError {
-    case storageUnavailable, isolatedSession, emptyToken, notConnected
+    case storageUnavailable, isolatedSession, emptyToken, notConnected, invalidDestination, connectionBusy
     var errorDescription: String? {
         switch self {
         case .storageUnavailable: return "Task storage is unavailable."
-        case .isolatedSession: return "This isolated verification session does not save credentials. Open Hawkeye normally to connect TickTick."
-        case .emptyToken: return "Enter a TickTick personal access token."
-        case .notConnected: return "Connect TickTick before choosing a destination list."
+        case .isolatedSession: return "This isolated verification session does not save credentials. Open Hawkeye normally to connect an app."
+        case .emptyToken: return "Enter a personal access token."
+        case .notConnected: return "Connect a Third Party App before choosing a destination."
+        case .invalidDestination: return "The selected destination is no longer available. Refresh and choose another."
+        case .connectionBusy: return "A connection change is already in progress."
         }
     }
 }

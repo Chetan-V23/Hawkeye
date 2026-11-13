@@ -1,12 +1,13 @@
 import Foundation
+import HawkeyeCore
 import Security
 import Darwin
 
 enum TokenStore {
     case keychain
+    case providerKeychain(TaskProviderID)
     case file(URL)
 
-    private static let service = "com.hawkeye2.mac.ticktick"
     private static let account = "personal-access-token"
 
     static let developmentDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -18,6 +19,17 @@ enum TokenStore {
         #else
         .keychain
         #endif
+    }
+
+    func scoped(to provider: TaskProviderID) -> TokenStore {
+        if provider == .ticktick {
+            if case .providerKeychain = self { return .keychain }
+            return self
+        }
+        if case .file(let url) = self {
+            return .file(url.deletingLastPathComponent().appendingPathComponent("\(provider.rawValue)-pat.txt"))
+        }
+        return .providerKeychain(provider)
     }
 
     var fileURL: URL? {
@@ -34,7 +46,7 @@ enum TokenStore {
                 return nil
             }
         }
-        var query = Self.identity
+        var query = identity
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -61,9 +73,9 @@ enum TokenStore {
             }
             return
         }
-        let status = SecItemUpdate(Self.identity as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let status = SecItemUpdate(identity as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
-            var query = Self.identity
+            var query = identity
             query[kSecValueData as String] = data
             query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let added = SecItemAdd(query as CFDictionary, nil)
@@ -83,19 +95,22 @@ enum TokenStore {
             }
             return
         }
-        let status = SecItemDelete(Self.identity as CFDictionary)
+        let status = SecItemDelete(identity as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status: status) }
     }
 
-    private static var identity: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service, kSecAttrAccount as String: account]
+    private var identity: [String: Any] {
+        let provider: TaskProviderID
+        if case .providerKeychain(let selected) = self { provider = selected }
+        else { provider = .ticktick }
+        return [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: "com.hawkeye2.mac.\(provider.rawValue)", kSecAttrAccount as String: Self.account]
     }
 }
 
 private struct KeychainError: LocalizedError {
     let status: OSStatus
     var errorDescription: String? {
-        "Keychain returned error \(status) when accessing the TickTick token. Unlock your login Keychain and try again."
+        "Keychain returned error \(status) when accessing the app token. Unlock your login Keychain and try again."
     }
 }

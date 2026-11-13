@@ -1,5 +1,11 @@
 import Foundation
 
+public struct TaskStatusIntent: Codable, Equatable, Sendable {
+    public let commandID: UUID
+    public let completed: Bool
+    public init(completed: Bool) { commandID = UUID(); self.completed = completed }
+}
+
 public struct PendingTaskOperation: Identifiable, Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case create
@@ -10,12 +16,16 @@ public struct PendingTaskOperation: Identifiable, Codable, Equatable, Sendable {
     public let taskID: UUID
     public let revision: UInt64
     public internal(set) var kind: Kind
+    public internal(set) var creationIntent: TaskCreationIntent?
+    public internal(set) var statusIntent: TaskStatusIntent?
 
     public init(id: UUID = UUID(), taskID: UUID, revision: UInt64, kind: Kind) {
         self.id = id
         self.taskID = taskID
         self.revision = revision
         self.kind = kind
+        self.creationIntent = nil
+        self.statusIntent = nil
     }
 }
 
@@ -92,33 +102,56 @@ public struct TaskState: Codable, Equatable, Sendable {
     }
 
     public mutating func merge(_ remoteTasks: [TickTickTask], at date: Date = Date()) {
+        merge(remoteTasks.map { $0.snapshot }, at: date)
+    }
+
+    public mutating func merge(_ remoteTasks: [RemoteTaskSnapshot], at date: Date = Date()) {
         for remote in remoteTasks {
-            let identity = RemoteTaskIdentity(taskID: remote.id, projectID: remote.projectId)
-            if let index = tasks.firstIndex(where: { $0.remote?.taskID == identity.taskID }) {
+            let identity = remote.identity
+            if let index = tasks.firstIndex(where: { $0.remote?.taskID == identity.taskID && $0.remote?.provider == identity.provider }) {
                 tasks[index].remote = identity
                 guard !isPending(tasks[index].id) else { continue }
                 tasks[index].title = remote.title
-                tasks[index].taskDescription = remote.content ?? remote.desc ?? ""
-                if tasks[index].dueAt.map(TickTickDate.string) != remote.scheduledStart.map(TickTickDate.string) {
-                    tasks[index].dueAt = remote.scheduledStart
+                if let description = remote.description { tasks[index].taskDescription = description }
+                if tasks[index].dueAt.map(TickTickDate.string) != remote.dueAt.map(TickTickDate.string) {
+                    tasks[index].dueAt = remote.dueAt
                 }
-                tasks[index].remoteDuration = remote.scheduledDuration
-                tasks[index].completedAt = remote.status == 2 ? (remote.completedTime ?? tasks[index].completedAt ?? date) : nil
+                tasks[index].remoteDuration = remote.duration
+                tasks[index].completedAt = remote.completed ? (remote.completedAt ?? tasks[index].completedAt ?? date) : nil
                 tasks[index].syncState = .synced
             } else {
-                tasks.append(TodoTask(
-                    title: remote.title,
-                    taskDescription: remote.content ?? remote.desc ?? "",
-                    createdAt: remote.createdTime ?? date,
-                    dueAt: remote.scheduledStart,
-                    completedAt: remote.status == 2 ? (remote.completedTime ?? date) : nil,
-                    remoteDuration: remote.scheduledDuration,
-                    remote: identity,
-                    syncState: .synced
-                ))
+                tasks.append(TodoTask(title: remote.title, taskDescription: remote.description ?? "",
+                                      createdAt: remote.createdAt ?? date, dueAt: remote.dueAt,
+                                      completedAt: remote.completed ? (remote.completedAt ?? date) : nil,
+                                      remoteDuration: remote.duration, remote: identity, syncState: .synced))
             }
         }
         clearInvalidManualStart()
+    }
+
+    mutating func discardConnectionData() {
+        outbox.removeAll()
+        lastSyncedAt = nil
+        for index in tasks.indices {
+            tasks[index].duration = tasks[index].duration ?? tasks[index].remoteDuration
+            tasks[index].remoteDuration = nil
+            tasks[index].remote = nil
+            tasks[index].syncState = .localOnly
+            enqueue(tasks[index], kind: .create)
+        }
+    }
+
+    mutating func prepareCreation(taskID: UUID, provider: TaskProviderID, destinationID: String) -> TaskCreationIntent? {
+        guard let index = outbox.firstIndex(where: { $0.taskID == taskID }), let task = task(id: taskID) else { return nil }
+        if outbox[index].creationIntent == nil {
+            outbox[index].creationIntent = TaskCreationIntent(provider: provider, destinationID: destinationID, payload: task)
+        }
+        return outbox[index].creationIntent
+    }
+
+    mutating func setCreationUncertain(taskID: UUID, _ uncertain: Bool) {
+        guard let index = outbox.firstIndex(where: { $0.taskID == taskID }) else { return }
+        outbox[index].creationIntent?.uncertain = uncertain
     }
 
     private mutating func clearInvalidManualStart() {
@@ -145,6 +178,7 @@ public struct TaskState: Codable, Equatable, Sendable {
         tasks[index].syncState = .pending
         if let operationIndex = outbox.firstIndex(where: { $0.taskID == taskID }) {
             outbox[operationIndex].kind = .update
+            outbox[operationIndex].creationIntent = nil
         }
     }
 
@@ -157,8 +191,14 @@ public struct TaskState: Codable, Equatable, Sendable {
     }
 
     private mutating func enqueue(_ task: TodoTask, kind: PendingTaskOperation.Kind) {
+        let previous = outbox.first { $0.taskID == task.id }
+        let intent = previous?.creationIntent
+        let status = previous?.statusIntent
         outbox.removeAll { $0.taskID == task.id }
-        outbox.append(PendingTaskOperation(taskID: task.id, revision: task.revision, kind: kind))
+        var operation = PendingTaskOperation(taskID: task.id, revision: task.revision, kind: kind)
+        operation.creationIntent = intent
+        operation.statusIntent = status?.completed == task.completed ? status : TaskStatusIntent(completed: task.completed)
+        outbox.append(operation)
     }
 
     private func validated(_ task: TodoTask) throws -> TodoTask {

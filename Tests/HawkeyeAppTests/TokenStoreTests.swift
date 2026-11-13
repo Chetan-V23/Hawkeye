@@ -55,6 +55,23 @@ final class TokenStoreTests: XCTestCase {
         #endif
     }
 
+    func testProviderFilesKeepLegacyTickTickPathAndIsolateRemoval() throws {
+        let legacyURL = try temporaryTokenURL()
+        let base = TokenStore.file(legacyURL)
+        let todoist = base.scoped(to: .todoist)
+        let notion = base.scoped(to: .notion)
+        XCTAssertEqual(base.scoped(to: .ticktick).fileURL, legacyURL)
+        XCTAssertEqual(todoist.fileURL?.lastPathComponent, "todoist-pat.txt")
+        XCTAssertEqual(notion.fileURL?.lastPathComponent, "notion-pat.txt")
+        try base.save("ticktick-test-token")
+        try todoist.save("todoist-test-token")
+        try notion.save("notion-test-token")
+        try todoist.remove()
+        XCTAssertEqual(try base.read(), "ticktick-test-token")
+        XCTAssertEqual(try notion.read(), "notion-test-token")
+        XCTAssertNil(try todoist.read())
+    }
+
     private func temporaryTokenURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hawkeye-token-test-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }

@@ -39,8 +39,9 @@ final class ConnectionSettingsTests: XCTestCase {
         try await model.changeDestination(to: ProjectOption(id: "destination", name: "New destination"))
         XCTAssertEqual(model.projectID, "destination")
         XCTAssertEqual(model.projectName, "New destination")
-        XCTAssertEqual(fixture.preferences.string(forKey: "ticktick.projectID"), "destination")
-        XCTAssertEqual(fixture.preferences.string(forKey: "ticktick.projectName"), "New destination")
+        XCTAssertEqual(TaskConnection.load(from: fixture.preferences)?.destinationID, "destination")
+        XCTAssertEqual(TaskConnection.load(from: fixture.preferences)?.destinationName, "New destination")
+        XCTAssertNil(fixture.preferences.string(forKey: "ticktick.projectID"))
         let beforeAdd = await fixture.server.requests()
         XCTAssertTrue(beforeAdd.isEmpty, "Changing a default must not move or update existing remote tasks.")
 

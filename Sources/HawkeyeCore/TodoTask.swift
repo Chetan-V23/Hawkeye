@@ -9,10 +9,19 @@ public enum TaskSyncState: String, Codable, Sendable {
 public struct RemoteTaskIdentity: Codable, Equatable, Hashable, Sendable {
     public var taskID: String
     public var projectID: String
+    public var provider: TaskProviderID
 
-    public init(taskID: String, projectID: String) {
+    public init(taskID: String, projectID: String, provider: TaskProviderID = .ticktick) {
+        self.provider = provider
         self.taskID = taskID
         self.projectID = projectID
+    }
+    private enum CodingKeys: String, CodingKey { case taskID, projectID, provider }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        taskID = try values.decode(String.self, forKey: .taskID)
+        projectID = try values.decode(String.self, forKey: .projectID)
+        provider = try values.decodeIfPresent(TaskProviderID.self, forKey: .provider) ?? .ticktick
     }
 }
 
